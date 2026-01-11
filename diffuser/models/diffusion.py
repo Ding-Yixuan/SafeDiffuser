@@ -731,6 +731,7 @@ class GaussianDiffusion(nn.Module):
         
         lambda2 = torch.where(G[2]*w_p2_bar < G[3]*p1_bar, w_p2_bar/G[3], torch.where(G[1]*w_p1_bar < G[0]*p2_bar, torch.zeros_like(p1_bar), torch.clamp(G[0]*p2_bar - G[1]*p1_bar, max=0)/(G[0]*G[3] - G[1]*G[2])))
 
+        # 修正动作
         out = lambda1*y1_bar + lambda2*y2_bar + u_bar
         rt = xp1.clone()    
         rt[:,2:4] = x[:,2:4] + out[:,0:2]

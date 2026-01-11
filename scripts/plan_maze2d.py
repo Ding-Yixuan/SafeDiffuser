@@ -13,7 +13,6 @@ import torch
 #export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/wei/.mujoco/mujoco200/bin
 #python scripts/plan_maze2d.py --config config.maze2d --dataset maze2d-large-v1
 
-
 class Parser(utils.Parser):
     dataset: str = 'maze2d-umaze-v1'
     config: str = 'config.maze2d'
@@ -73,6 +72,8 @@ for iter in range(1):   # num of testing runs
     ## set conditioning xy position to be the goal
     target = env._target
     cond = {
+        # 最后一个时刻（horizon-1）必须到目标 target，速度为 0
+        # 让 diffusion 生成一条轨迹，末端落在目标点。
         diffusion.horizon - 1: np.array([*target, 0, 0]),
     }
 
@@ -86,6 +87,7 @@ for iter in range(1):   # num of testing runs
 
         ## can replan if desired, but the open-loop plans are good enough for maze2d
         ## that we really only need to plan once
+        # t==0时生成一批候选轨迹
         if t == 0:
 
             cond[0] = observation
@@ -98,7 +100,9 @@ for iter in range(1):   # num of testing runs
     #############################       single test
             # cond[0] = observation
             # action, samples, diffusion_paths, safe1, safe2 = policy(cond, batch_size=args.batch_size)  #policy.normalizer.normalizers['observations'].mins
+            # 这里拿出来第一条规划的轨迹
             actions = samples.actions[0]
+            # sequence[k] ≈ [x_k, y_k, vx_k, vy_k]
             sequence = samples.observations[0]
             diffusion_paths = diffusion_paths[0]
 
@@ -123,6 +127,8 @@ for iter in range(1):   # num of testing runs
             ##################################################end saving videos/images
 
         # ####
+        # 每一个环境步 t：取计划轨迹的下一个点作为“期望状态”（waypoint）
+        # 根据当前真实状态 state 计算一个 action，让环境往那个 waypoint 靠近
         if t < len(sequence) - 1:
             next_waypoint = sequence[t+1]
         else:
@@ -131,6 +137,7 @@ for iter in range(1):   # num of testing runs
             
 
         ## can use actions or define a simple controller based on state predictions
+        # 用“期望状态 - 当前状态”作为 action(位置误差+速度误差)
         action = next_waypoint[:2] - state[:2] + (next_waypoint[2:] - state[2:])
         
         # else:

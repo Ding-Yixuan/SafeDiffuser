@@ -27,6 +27,7 @@ class EMA():
             old_weight, up_weight = ma_params.data, current_params.data
             ma_params.data = self.update_average(old_weight, up_weight)
 
+    # 具体的计算公式： old * 0.995 + new * 0.005
     def update_average(self, old, new):
         if old is None:
             return new
@@ -101,6 +102,7 @@ class Trainer(object):
     #------------------------------------ api ------------------------------------#
     #-----------------------------------------------------------------------------#
 
+    # 入口：要训练 n 步
     def train(self, n_train_steps):
 
         timer = Timer()
@@ -113,6 +115,7 @@ class Trainer(object):
                 loss = loss / self.gradient_accumulate_every
                 loss.backward()
 
+            # 根据梯度更新参数
             self.optimizer.step()
             self.optimizer.zero_grad()
 
