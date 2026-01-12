@@ -19,6 +19,7 @@ args = Parser().parse_args('diffusion')
 #---------------------------------- dataset ----------------------------------#
 #-----------------------------------------------------------------------------#
 
+# Maze2D 数据
 dataset_config = utils.Config(
     args.loader,
     savepath=(args.savepath, 'dataset_config.pkl'),
@@ -30,6 +31,7 @@ dataset_config = utils.Config(
     max_path_length=args.max_path_length,
 )
 
+# 后续画图
 render_config = utils.Config(
     args.renderer,
     savepath=(args.savepath, 'render_config.pkl'),

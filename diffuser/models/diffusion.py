@@ -1059,9 +1059,9 @@ class GaussianDiffusion(nn.Module):
         # x = self.GD(x, xp1)
 
         ####################### SafeDiffusers 
-        x = xp1 # for training only
+        # x = xp1 # for training only
         # x = self.invariance(x, xp1)    # RoS
-        # x = self.invariance_cf(x, xp1)  # RoS closed form
+        x = self.invariance_cf(x, xp1)  # RoS closed form
         # x = self.invariance_relax(x, xp1, t) # ReS
         # x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    
         # x = self.invariance_time(x, xp1, t)   # TVS
@@ -1094,6 +1094,12 @@ class GaussianDiffusion(nn.Module):
         # x = self.invariance_umaze(x, xp1)   #umaze
         # x = self.invariance_umaze_relax(x, xp1, t)   #umaze
         #-----------------------------------------end--------------------------------------------------#
+
+        # train模式safe补丁
+
+      # self.safe1 = torch.tensor(0.0, device=device)  # 或者 device='cuda' / x.device
+      # self.safe2 = torch.tensor(0.0, device=device)
+
         return x
 
     @torch.no_grad()

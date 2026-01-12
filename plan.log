@@ -1,0 +1,102 @@
+pybullet build time: Jan 29 2025 23:19:57
+[ utils/colab ] Warning: not importing colab dependencies
+[ utils/setup ] Reading config: config.maze2d:maze2d_large_v1
+[ utils/setup ] Using overrides | config: config.maze2d | dataset: maze2d_large_v1
+[ utils/setup ] Found extras: ['--logbase', 'logs']
+[ utils/setup ] Overriding config | logbase : logs --> logs
+[ utils/setup ] Lazy fstring | diffusion_loadpath : f:diffusion/H{horizon}_T{n_diffusion_steps} --> diffusion/H384_T256
+[ utils/setup ] Setting exp_name to: plans/release_H384_T256_LimitsNormalizer_b1_condFalse
+[ utils/setup ] Saved args to logs/maze2d-large-v1/plans/release_H384_T256_LimitsNormalizer_b1_condFalse/58/args.json
+[ utils/serialization ] Loaded config from logs/maze2d-large-v1/diffusion/H384_T256/dataset_config.pkl
+
+[utils/config ] Config: <class 'diffuser.datasets.sequence.GoalDataset'>
+    env: maze2d-large-v1
+    horizon: 384
+    max_path_length: 40000
+    normalizer: LimitsNormalizer
+    preprocess_fns: ['maze2d_set_terminals']
+    use_padding: False
+
+[ utils/serialization ] Loaded config from logs/maze2d-large-v1/diffusion/H384_T256/render_config.pkl
+
+[utils/config ] Config: <class 'diffuser.utils.rendering.Maze2dRenderer'>
+    env: maze2d-large-v1
+
+[ utils/serialization ] Loaded config from logs/maze2d-large-v1/diffusion/H384_T256/model_config.pkl
+
+[utils/config ] Config: <class 'diffuser.models.temporal.TemporalUnet'>
+    cond_dim: 4
+    dim_mults: (1, 4, 8)
+    horizon: 384
+    transition_dim: 6
+
+[ utils/serialization ] Loaded config from logs/maze2d-large-v1/diffusion/H384_T256/diffusion_config.pkl
+
+[utils/config ] Config: <class 'diffuser.models.diffusion.GaussianDiffusion'>
+    action_dim: 2
+    action_weight: 1
+    clip_denoised: True
+    horizon: 384
+    loss_discount: 1
+    loss_type: l2
+    loss_weights: None
+    n_timesteps: 256
+    observation_dim: 4
+    predict_epsilon: False
+
+[ utils/serialization ] Loaded config from logs/maze2d-large-v1/diffusion/H384_T256/trainer_config.pkl
+
+[utils/config ] Config: <class 'diffuser.utils.training.Trainer'>
+    bucket: None
+    ema_decay: 0.995
+    gradient_accumulate_every: 2
+    label_freq: 40000
+    n_reference: 50
+    n_samples: 10
+    results_folder: logs/maze2d-large-v1/diffusion/H384_T256
+    sample_freq: 1000
+    save_freq: 1000
+    save_parallel: False
+    train_batch_size: 32
+    train_lr: 0.0002
+
+load datafile:   0%|          | 0/8 [00:00<?, ?it/s]load datafile:  12%|█▎        | 1/8 [00:00<00:01,  6.84it/s]load datafile:  38%|███▊      | 3/8 [00:00<00:00,  8.56it/s]load datafile:  50%|█████     | 4/8 [00:00<00:00,  7.88it/s]load datafile:  62%|██████▎   | 5/8 [00:00<00:00,  5.39it/s]load datafile: 100%|██████████| 8/8 [00:00<00:00,  9.35it/s]
+[ utils/preprocessing ] Segmented maze2d-large-v1 | 1061 paths | min length: 67 | max length: 30470
+[ datasets/buffer ] Finalized replay buffer | 1062 episodes
+[ datasets/buffer ] Fields:
+    actions: (1062, 40000, 2)
+    infos/goal: (1062, 40000, 2)
+    infos/qpos: (1062, 40000, 2)
+    infos/qvel: (1062, 40000, 2)
+    observations: (1062, 40000, 4)
+    rewards: (1062, 40000, 1)
+    terminals: (1062, 40000, 1)
+    timeouts: (1062, 40000, 1)
+    next_observations: (1062, 40000, 4)
+    normed_observations: (1062, 40000, 4)
+    normed_actions: (1062, 40000, 2)
+[ models/temporal ] Channel dimensions: [(6, 32), (32, 128), (128, 256)]
+[(6, 32), (32, 128), (128, 256)]
+
+[ utils/serialization ] Loading model epoch: 1200000
+
+step:  0 /100
+
+Traceback (most recent call last):
+  File "scripts/plan_maze2d.py", line 93, in <module>
+    action, samples, diffusion_paths, safe1, safe2, elbo = policy(cond, batch_size=args.batch_size)
+  File "/home/lqz27/Yzx_ws/SafeDiffuser/diffuser/guides/policies.py", line 51, in __call__
+    sample, diffusion = self.diffusion_model(conditions)
+  File "/home/lqz27/anaconda3/envs/diffuser_to_use/lib/python3.8/site-packages/torch/nn/modules/module.py", line 1051, in _call_impl
+    return forward_call(*input, **kwargs)
+  File "/home/lqz27/Yzx_ws/SafeDiffuser/diffuser/models/diffusion.py", line 1231, in forward
+    return self.conditional_sample(cond=cond, *args, **kwargs)
+  File "/home/lqz27/anaconda3/envs/diffuser_to_use/lib/python3.8/site-packages/torch/autograd/grad_mode.py", line 28, in decorate_context
+    return func(*args, **kwargs)
+  File "/home/lqz27/Yzx_ws/SafeDiffuser/diffuser/models/diffusion.py", line 1148, in conditional_sample
+    return self.p_sample_loop(shape, cond, return_diffusion= return_diffusion, *args, **kwargs)   ## debug
+  File "/home/lqz27/anaconda3/envs/diffuser_to_use/lib/python3.8/site-packages/torch/autograd/grad_mode.py", line 28, in decorate_context
+    return func(*args, **kwargs)
+  File "/home/lqz27/Yzx_ws/SafeDiffuser/diffuser/models/diffusion.py", line 1122, in p_sample_loop
+    safe1.append(self.safe1.unsqueeze(0))
+AttributeError: 'int' object has no attribute 'unsqueeze'
