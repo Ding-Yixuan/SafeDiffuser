@@ -1216,7 +1216,7 @@ class GaussianDiffusion(nn.Module):
         
         # A. 缩放系数 (Learning Rate)
         # 这个系数决定了我们听 CBF 的话听多少。0.1 比较温和。
-        alpha = 0.2 
+        alpha = 0.05 
         
         # B. 计算原始修正量 (保留梯度的大小信息！)
         # 之前我们除以了模长，丢掉了“危险程度”的信息，导致微小危险也被放大
@@ -1226,7 +1226,7 @@ class GaussianDiffusion(nn.Module):
         # C. 截断 (Clamping) - 防止瞬移
         # 限制单步修正的最大幅度，例如归一化空间的 0.02 (约等于地图的 1%)
         # 这样即使梯度爆炸，也不会把轨迹踢出地图
-        clip_value = 0.02
+        clip_value = 0.01
         delta = torch.clamp(raw_delta, -clip_value, clip_value)
         
         # D. 只在不安全时修正

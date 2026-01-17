@@ -1,3 +1,12 @@
+'''
+/home/lqz27/anaconda3/envs/diffuser_to_use/bin/python /home/lqz27/dyx_ws/SafeDiffuser/scripts/plan_maze2d.py \
+    --dataset maze2d-large-v1 \
+    --horizon 384 \
+    --n_diffusion_steps 256 \
+    --diffusion_epoch latest
+'''
+
+
 import json
 import numpy as np
 from os.path import join

@@ -36,7 +36,7 @@ env = diffusion_experiment.renderer.env # 获取环境以读取地图
 diffusion.to(device)
 
 # =========================================================
-# [关键补丁 V2] 稳健地注入归一化参数
+# 稳健地注入归一化参数
 # =========================================================
 print("🔧 正在注入归一化参数给 Diffusion 模型...")
 normalizer = dataset.normalizer
@@ -75,37 +75,6 @@ if not isinstance(diffusion.norm_mins, torch.Tensor):
 # =========================================================
 # 2. 定义对比函数
 # =========================================================
-# def generate_trajectory(cond, use_cbf=False):
-#     """
-#     生成一条轨迹
-#     use_cbf: True=开启避障, False=关闭避障
-#     """
-#     # 临时开关 CBF
-#     if use_cbf:
-#         # 如果需要开启，确保 adapter 已加载
-#         if not hasattr(diffusion, 'neural_cbf') or diffusion.neural_cbf is None:
-#             diffusion.neural_cbf = NeuralBarrierAdapter(device=device)
-#         print("⚡ [Mode] CBF 避障已开启")
-#     else:
-#         # 如果需要关闭，临时保存并移除
-#         if hasattr(diffusion, 'neural_cbf'):
-#             saved_adapter = diffusion.neural_cbf
-#             del diffusion.neural_cbf # 临时删除
-#         print("💀 [Mode] CBF 避障已关闭 (Baseline)")
-
-#     # 运行扩散采样 (p_sample_loop)
-#     # 构造 batch (size=1)
-#     cond_batch = {k: v[None, ...] for k, v in cond.items()}
-    
-#     # 采样
-#     samples = diffusion.p_sample_loop(shape=(1, diffusion.horizon, diffusion.observation_dim), cond=cond_batch)
-    
-#     # 恢复 CBF (为了不影响下一次运行)
-#     if not use_cbf and 'saved_adapter' in locals():
-#         diffusion.neural_cbf = saved_adapter
-
-#     # 返回物理坐标 (Batch, Horizon, Dim) -> (Horizon, Dim)
-#     return samples[0].cpu().numpy()
 
 def generate_trajectory(cond, use_cbf=False):
     """
@@ -116,6 +85,28 @@ def generate_trajectory(cond, use_cbf=False):
     if use_cbf:
         if not hasattr(diffusion, 'neural_cbf') or diffusion.neural_cbf is None:
             diffusion.neural_cbf = NeuralBarrierAdapter(device=device)
+            
+            # [关键修复] 强制把环境里的真实墙壁同步给 CBF
+            # 既然画图是对的，我们就用画图的逻辑来生成墙壁坐标
+            maze_arr = env.maze_arr
+            h, w = maze_arr.shape
+            real_walls = []
+            
+            for r in range(h):
+                for c in range(w):
+                    if maze_arr[r, c] == 10: # 10 是墙
+                        # 使用和画图一模一样的坐标变换
+                        # 画图逻辑: x = c, y = h - 1 - r
+                        wall_x = float(c)
+                        wall_y = float(h - 1 - r)
+                        real_walls.append([wall_x, wall_y])
+            
+            # 覆盖 CBF 里的旧墙壁数据
+            diffusion.neural_cbf.wall_centers_tensor = torch.tensor(
+                real_walls, dtype=torch.float32, device=device
+            )
+            print(f"✅ 已同步环境中的 {len(real_walls)} 个墙壁坐标到 CBF！")
+            
         print("⚡ [Mode] CBF 避障已开启")
     else:
         if hasattr(diffusion, 'neural_cbf'):
@@ -160,7 +151,7 @@ def generate_trajectory(cond, use_cbf=False):
 # 我们找一个经典的“穿墙”场景
 # 在 Maze2D Large 中，(2,2) 到 (4,2) 中间通常有墙
 start_pos = np.array([1.0, 1.0]) 
-target_pos = np.array([5.0, 5.0]) # 你可以改这个坐标测试不同的墙
+target_pos = np.array([5.0, 6.0]) # 你可以改这个坐标测试不同的墙
 
 # 构造条件
 cond = {
@@ -176,65 +167,168 @@ print("\n=== 开始生成 Safe 轨迹 (有避障) ===")
 traj_safe = generate_trajectory(cond, use_cbf=True)
 
 # =========================================================
-# 4. 画图对比
+# 4. 像 plan_maze2d 一样直接画矩阵
 # =========================================================
-print("\n🎨 正在绘制对比图...")
+print("\n🎨 正在绘制最终对比图 (官方对齐逻辑)...")
 
-# 获取反归一化后的物理坐标 (假设 diff 输出是归一化的)
-# 如果你的 dataset.normalizer 已经处理了，这里可能需要 unnormalize
-# 通常 p_sample_loop 返回的是 Normalized 数据
+# 1. 获取迷宫矩阵 (真理之源)
+# maze_arr: 0是路，10或11是墙
+maze_arr = env.maze_arr 
+
+# 2. 准备画布
+# 这里的 figsize 可以随意，不影响对齐，只影响清晰度
+fig, ax = plt.subplots(figsize=(12, 12))
+
+# 3. 画迷宫背景 (模仿 renderer 的核心逻辑)
+# map_mask: 墙是0(黑)，路是1(白) -> 或者是反过来，看 cmap
+# 官方 renderer 用的是 cmap='gray_r' (Reverse Gray)，也就是数值大的是黑，小的是白
+# maze_arr 里墙是 10，路是 0。
+# 所以 'gray_r' 会让 10(大数) 变黑，0(小数) 变白。完美！
+ax.imshow(maze_arr, cmap='gray', origin='upper')
+
+# 4. 准备轨迹数据
+# Unnormalize 拿到物理坐标
 traj_unsafe_phys = dataset.normalizer.unnormalize(traj_unsafe, 'observations')
 traj_safe_phys = dataset.normalizer.unnormalize(traj_safe, 'observations')
 
-# 提取 X, Y
-# 根据之前的分析，index 0=x, 1=y (或 2,3 取决于是否包含 action，但 unnormalize 后通常是 obs)
-# Maze2D obs 通常是 [x, y, vx, vy]
-path_unsafe_x = traj_unsafe_phys[:, 0]
-path_unsafe_y = traj_unsafe_phys[:, 1]
-path_safe_x = traj_safe_phys[:, 0]
-path_safe_y = traj_safe_phys[:, 1]
+# 5. [核心对齐] 坐标映射
+# Maze2D 的物理坐标定义：
+# observation[0] = Vertical (垂直方向/行号/Row) = X
+# observation[1] = Horizontal (水平方向/列号/Col) = Y
 
-# 创建画布
-fig, ax = plt.subplots(figsize=(10, 10))
+# Matplotlib 的 plot(x, y) 定义：
+# 第一个参数是 横轴坐标 (Horizontal)
+# 第二个参数是 纵轴坐标 (Vertical)
 
-# --- 画地图背景 ---
-# 解析迷宫结构
-maze_arr = env.maze_arr
-h, w = maze_arr.shape
-# Maze2D 的物理坐标系转换: grid (r, c) -> phys (c+1, r+1)
-# 我们直接画格子
-for r in range(h):
-    for c in range(w):
-        if maze_arr[r, c] == 10: # 10 代表墙
-            # 画墙壁 (物理坐标)
-            # x = c+0.5 到 c+1.5 (中心是 c+1) -> 这里的 matplotlib rect 是 (left, bottom)
-            # 物理中心 (c+1, r+1), 宽1, 高1 -> 左下角 (c+0.5, r+0.5)
-            rect = patches.Rectangle((c - 0.5, r - 0.5), 1, 1, linewidth=0, facecolor='black')
-            ax.add_patch(rect)
+# ---> 所以，我们必须把 observation[1] 放前面，observation[0] 放后面！ <---
 
-# --- 画轨迹 ---
-# 1. Baseline (红色虚线)
-ax.plot(path_unsafe_x, path_unsafe_y, color='red', linestyle='--', linewidth=2, label='Original Diffuser (Unsafe)', alpha=0.7)
-ax.scatter(path_unsafe_x, path_unsafe_y, color='red', s=10, alpha=0.3)
+unsafe_row = traj_unsafe_phys[:, 0] # 物理X (行)
+unsafe_col = traj_unsafe_phys[:, 1] # 物理Y (列)
+safe_row = traj_safe_phys[:, 0]
+safe_col = traj_safe_phys[:, 1]
 
-# 2. Safe (绿色实线)
-ax.plot(path_safe_x, path_safe_y, color='#00FF00', linewidth=3, label='SafeDiffuser (With CBF)')
-ax.scatter(path_safe_x, path_safe_y, color='green', s=15, alpha=0.5)
+# 6. 画轨迹 (Col, Row)
+ax.plot(unsafe_col, unsafe_row, color='red', linestyle='--', linewidth=3, label='Original (Unsafe)')
+ax.plot(safe_col, safe_row, color='#00FF00', linewidth=3, label='SafeDiffuser (CBF)')
 
-# --- 画起点终点 ---
-ax.scatter(start_pos[0], start_pos[1], color='blue', s=200, marker='*', label='Start', zorder=10)
-ax.scatter(target_pos[0], target_pos[1], color='gold', s=200, marker='X', label='Target', zorder=10)
+# 7. 画起点终点 (Col, Row)
+# 起点 (1.0, 1.0) -> Col=1.0, Row=1.0
+ax.scatter(start_pos[1], start_pos[0], color='blue', s=400, marker='*', label='Start', zorder=10)
+ax.scatter(target_pos[1], target_pos[0], color='gold', s=400, marker='X', label='Target', zorder=10)
 
-# 设置图形属性
+# 8. 装饰
+ax.legend(loc='upper right', fontsize=14, framealpha=0.9)
+ax.set_title("SafeDiffuser Comparison (Perfect Alignment)", fontsize=16)
+
+# 9. 锁定坐标轴比例
+# 这步很重要，保证迷宫是正方形格子，不会被拉扁
 ax.set_aspect('equal')
-ax.set_xlim(0, 10) # 根据 Maze Large 调整
-ax.set_ylim(0, 12)
-ax.legend(loc='upper right', fontsize=12)
-ax.set_title("Comparison: Original vs SafeDiffuser", fontsize=16)
-ax.grid(True, linestyle=':', alpha=0.3)
+
+# 10. 隐藏刻度 (可选)
+ax.axis('off')
 
 # 保存
-save_path = "comparison_result.png"
+save_path = "final_comparison_perfect.png"
 plt.savefig(save_path, dpi=150, bbox_inches='tight')
-print(f"✅ 对比图已生成: {save_path}")
-print("快打开看看红色和绿色的区别！")
+print(f"✅ 完美对齐图已生成: {save_path}")
+
+# # =========================================================
+# # 4. [科学评估版] 自动检测收敛 + 虚实结合画图 + 正确黑白
+# # =========================================================
+# print("\n🎨 正在绘制最终对比图 (科学评估版)...")
+
+# # 1. 获取迷宫矩阵
+# maze_arr = env.maze_arr 
+
+# # 2. 准备画布
+# fig, ax = plt.subplots(figsize=(12, 12))
+
+# # 3. [背景修正] 强制黑墙白路
+# ax.imshow(maze_arr, cmap='gray', origin='upper')
+
+# # 4. 准备轨迹数据
+# traj_unsafe_phys = dataset.normalizer.unnormalize(traj_unsafe, 'observations')
+# traj_safe_phys = dataset.normalizer.unnormalize(traj_safe, 'observations')
+
+# # 坐标提取 (注意：Index 0=Row/Height, Index 1=Col/Width)
+# unsafe_row = traj_unsafe_phys[:, 0]
+# unsafe_col = traj_unsafe_phys[:, 1]
+# safe_row = traj_safe_phys[:, 0]
+# safe_col = traj_safe_phys[:, 1]
+
+# # =========================================================
+# # 5. 定义收敛检测函数 (解决“回头路”视觉问题)
+# # =========================================================
+# def split_trajectory_by_convergence(traj_col, traj_row, target, dist_thr=0.5):
+#     """
+#     找到轨迹最后一次进入目标圈(dist_thr)并不再出来的时刻。
+#     """
+#     points = np.stack([traj_col, traj_row], axis=1) # (N, 2)
+#     # 注意：target_pos 是 [Row, Col]，这里我们要跟 points 里的 [Col, Row] 对齐
+#     # 所以 target 传入时应该是 [Target_Col, Target_Row]
+#     target_point = np.array(target)
+    
+#     # 1. 计算距离
+#     dists = np.linalg.norm(points - target_point, axis=1)
+    
+#     # 2. 判定入圈
+#     in_zone = dists < dist_thr
+    
+#     # 3. 倒着找第一个“出圈”的点
+#     out_of_zone_indices = np.where(~in_zone)[0]
+    
+#     if len(out_of_zone_indices) == 0:
+#         return 0 # 一直在终点
+#     elif len(out_of_zone_indices) == len(traj_col):
+#         return len(traj_col) # 从未收敛
+#     else:
+#         # 收敛点是最后一个出圈点的下一个点
+#         return out_of_zone_indices[-1] + 1
+
+# # 目标坐标 (用于画图和计算距离，必须是 [Col, Row])
+# target_plot = [target_pos[1], target_pos[0]]
+
+# # 计算截断点
+# idx_unsafe = split_trajectory_by_convergence(unsafe_col, unsafe_row, target_plot)
+# idx_safe = split_trajectory_by_convergence(safe_col, safe_row, target_plot)
+
+# # =========================================================
+# # 6. 画轨迹 (实线=赶路, 虚线=磨蹭)
+# # =========================================================
+
+# # --- A. Baseline (红色) ---
+# # 实线：有效赶路阶段
+# ax.plot(unsafe_col[:idx_unsafe], unsafe_row[:idx_unsafe], 
+#         color='red', linestyle='--', linewidth=3, label='Original (Active)')
+# # 虚线：到达后徘徊阶段 (透明度低)
+# if idx_unsafe < len(unsafe_col):
+#     ax.plot(unsafe_col[idx_unsafe:], unsafe_row[idx_unsafe:], 
+#             color='red', linestyle=':', linewidth=1, alpha=0.3)
+
+# # --- B. SafeDiffuser (绿色) ---
+# # 实线：有效赶路阶段
+# ax.plot(safe_col[:idx_safe], safe_row[:idx_safe], 
+#         color='#00FF00', linewidth=3, label='SafeDiffuser (Active)')
+# # 虚线：到达后徘徊阶段
+# if idx_safe < len(safe_col):
+#     ax.plot(safe_col[idx_safe:], safe_row[idx_safe:], 
+#             color='#00FF00', linestyle='-', linewidth=1, alpha=0.2)
+#     # 画一个圈标记“停车点”
+#     stop_idx = min(idx_safe, len(safe_col)-1)
+#     ax.scatter(safe_col[stop_idx], safe_row[stop_idx], 
+#                color='#00FF00', s=80, marker='o', edgecolors='white', zorder=5, label='Settled')
+
+# # 7. 画起点终点 (Col, Row)
+# ax.scatter(start_pos[1], start_pos[0], color='blue', s=400, marker='*', label='Start', zorder=10)
+# ax.scatter(target_pos[1], target_pos[0], color='gold', s=400, marker='X', label='Target', zorder=10)
+
+# # 8. 装饰
+# ax.legend(loc='upper right', fontsize=12, framealpha=0.9)
+# ax.set_title("SafeDiffuser Evaluation (Solid=Active, Fade=Settled)", fontsize=16)
+# ax.set_aspect('equal')
+# ax.axis('off')
+
+# # 保存
+# save_path = "final_comparison_scientific.png"
+# plt.savefig(save_path, dpi=150, bbox_inches='tight')
+# print(f"✅ 科学评估图已生成: {save_path}")
