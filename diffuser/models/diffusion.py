@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from .cbf_adapter import NeuralBarrierAdapter
 from torch import nn
 import pdb
 from torch.autograd import Variable
@@ -138,6 +139,7 @@ class GaussianDiffusion(nn.Module):
         ## get loss coefficients and initialize objective
         loss_weights = self.get_loss_weights(action_weight, loss_discount, loss_weights)
         self.loss_fn = Losses[loss_type](loss_weights, self.action_dim)
+        self.neural_cbf = NeuralBarrierAdapter(device='cuda' if torch.cuda.is_available() else 'cpu')
 
     def _format_conditions(self, conditions, batch_size):
         conditions = utils.apply_dict(
@@ -1027,6 +1029,226 @@ class GaussianDiffusion(nn.Module):
         rt = rt.unsqueeze(0)
         return rt        
 
+
+    # @torch.no_grad()
+    # def invariance_neural(self, x, xp1):
+    #     """
+    #     基于 TTC 神经网络的避障修正
+    #     """
+    #     # 如果适配器没加载成功，直接返回原轨迹
+    #     if not hasattr(self, 'neural_cbf'):
+    #         return xp1
+
+    #     # 1. 准备数据
+    #     original_shape = xp1.shape
+    #     # 展平时间维度: (Batch, Horizon, Dim) -> (Batch*Horizon, Dim)
+    #     xp1_flat = xp1.view(-1, xp1.shape[-1])
+        
+    #     # 2. 反归一化 (关键步骤!)
+    #     # SafeDiffuser 的状态排列通常是: [Action(2), X, Y, VX, VY]
+    #     # 根据代码惯例: index 2=X, 3=Y, 4=VX, 5=VY (也可能 2=Y, 3=X，Maze2D标准通常 0=x)
+    #     # 我们假设: index 2=X, 3=Y
+        
+    #     mins = torch.tensor(self.norm_mins, device=xp1.device)
+    #     maxs = torch.tensor(self.norm_maxs, device=xp1.device)
+    #     width = maxs - mins
+        
+    #     # 反归一化公式: phys = (norm + 1) / 2 * (max - min) + min
+    #     # 我们需要解压出物理坐标和物理速度
+        
+    #     # 提取 Normalized 数据
+    #     norm_pos = xp1_flat[:, 2:4] # [x, y]
+    #     norm_vel = xp1_flat[:, 4:6] # [vx, vy]
+        
+    #     # 转换 Position
+    #     phys_pos = (norm_pos + 1) / 2 * width[2:4] + mins[2:4]
+    #     # 转换 Velocity
+    #     phys_vel = (norm_vel + 1) / 2 * width[4:6] + mins[4:6]
+        
+    #     # 拼装成 TTC 网络需要的 [x, y, vx, vy]
+    #     phys_state = torch.cat([phys_pos, phys_vel], dim=1)
+        
+    #     # 3. 询问 TTC 网络
+    #     h_val, grad_phys = self.neural_cbf.get_correction_gradient(phys_state)
+    #     # h_val: 安全值 (负数代表危险)
+    #     # grad_phys: [dh/dx, dh/dy] (物理单位的梯度)
+        
+    #     # 4. 只有危险的点才需要修正 (h < 0)
+    #     # 安全余量设为 0.05，稍微保守一点
+    #     is_unsafe = (h_val < 0.05).float()
+        
+    #     # 5. 将梯度映射回归一化空间
+    #     # Chain Rule: d(Norm)/d(Phys) = 2 / Width
+    #     # 我们要应用的是 delta_Norm，所以: delta_Norm = delta_Phys * (2/Width)
+    #     # 实际上直接把梯度投影回去: grad_norm = grad_phys * (width / 2)
+    #     scale = width[2:4] / 2
+    #     grad_norm = grad_phys * scale
+        
+    #     # 6. 计算修正量
+    #     # 步长 alpha: 如果发现避障太弱撞墙了，就把这个调大 (比如 0.5 -> 1.0)
+    #     # 如果发现轨迹抖动太厉害，就调小 (0.5 -> 0.2)
+    #     alpha = 0.5
+        
+    #     delta = grad_norm * is_unsafe * alpha
+        
+    #     # 7. 应用修正 (Gradient Ascent on h)
+    #     xp1_new = xp1_flat.clone()
+    #     # 加上梯度，意味着我们想让 h 变大（变安全）
+    #     xp1_new[:, 2:4] += delta
+        
+    #     return xp1_new.view(original_shape)
+
+    # @torch.no_grad()
+    # def invariance_neural(self, x, xp1):
+    #     """
+    #     基于 TTC 神经网络的避障修正 (修复索引版)
+    #     """
+    #     if not hasattr(self, 'neural_cbf'):
+    #         return xp1
+
+    #     # 1. 准备数据
+    #     original_shape = xp1.shape
+    #     xp1_flat = xp1.view(-1, xp1.shape[-1])
+        
+    #     # 2. 准备归一化参数
+    #     # UserWarning 修复: 使用 clone().detach()
+    #     if isinstance(self.norm_mins, torch.Tensor):
+    #         mins = self.norm_mins.clone().detach().to(xp1.device)
+    #         maxs = self.norm_maxs.clone().detach().to(xp1.device)
+    #     else:
+    #         mins = torch.tensor(self.norm_mins, device=xp1.device, dtype=torch.float32)
+    #         maxs = torch.tensor(self.norm_maxs, device=xp1.device, dtype=torch.float32)
+            
+    #     width = maxs - mins
+        
+    #     # 3. 反归一化 (关键修复: 索引对齐)
+    #     # XP1 结构: [Action(0,1), X(2), Y(3), VX(4), VY(5)]
+    #     norm_pos = xp1_flat[:, 2:4] # 取出归一化的 X, Y
+    #     norm_vel = xp1_flat[:, 4:6] # 取出归一化的 VX, VY
+        
+    #     # Mins/Maxs 结构: [X(0), Y(1), VX(2), VY(3)] (假设只有4维)
+    #     # 如果 mins 是 6 维，则不需要改；如果是 4 维，需要偏移
+    #     if len(mins) == 4:
+    #         param_pos_idx = slice(0, 2) # 对应 mins[0:2]
+    #         param_vel_idx = slice(2, 4) # 对应 mins[2:4]
+    #     else:
+    #         # 如果是 6 维 (含Action)，则保持原样
+    #         param_pos_idx = slice(2, 4)
+    #         param_vel_idx = slice(4, 6)
+        
+    #     # 计算物理坐标
+    #     # phys = (norm + 1) / 2 * width + min
+    #     phys_pos = (norm_pos + 1) / 2 * width[param_pos_idx] + mins[param_pos_idx]
+    #     phys_vel = (norm_vel + 1) / 2 * width[param_vel_idx] + mins[param_vel_idx]
+        
+    #     # 4. 组装输入 [x, y, vx, vy]
+    #     phys_state = torch.cat([phys_pos, phys_vel], dim=1)
+        
+    #     # 5. 调用 TTC 网络
+    #     h_val, grad_phys = self.neural_cbf.get_correction_gradient(phys_state)
+        
+    #     # 6. 计算修正量
+    #     is_unsafe = (h_val < 0.05).float()
+        
+    #     # 映射回 Normalized 空间
+    #     # grad_norm = grad_phys * (width / 2)
+    #     scale = width[param_pos_idx] / 2
+    #     grad_norm = grad_phys * scale
+        
+    #     alpha = 0.5
+    #     delta = grad_norm * is_unsafe * alpha
+        
+    #     # 7. 应用修正
+    #     xp1_new = xp1_flat.clone()
+    #     xp1_new[:, 2:4] += delta # 只修正位置
+        
+    #     return xp1_new.view(original_shape)
+
+    @torch.no_grad()
+    def invariance_neural(self, x, xp1):
+        """
+        基于 TTC 神经网络的避障修正 (防瞬移版)
+        """
+        if not hasattr(self, 'neural_cbf'):
+            return xp1
+
+        # 1. 准备数据
+        original_shape = xp1.shape
+        xp1_flat = xp1.view(-1, xp1.shape[-1])
+        
+        # 2. 准备归一化参数
+        if isinstance(self.norm_mins, torch.Tensor):
+            mins = self.norm_mins.clone().detach().to(xp1.device)
+            maxs = self.norm_maxs.clone().detach().to(xp1.device)
+        else:
+            mins = torch.tensor(self.norm_mins, device=xp1.device, dtype=torch.float32)
+            maxs = torch.tensor(self.norm_maxs, device=xp1.device, dtype=torch.float32)
+            
+        width = maxs - mins
+        
+        # 3. 反归一化
+        norm_pos = xp1_flat[:, 2:4]
+        norm_vel = xp1_flat[:, 4:6]
+        
+        if len(mins) == 4:
+            param_pos_idx = slice(0, 2)
+            param_vel_idx = slice(2, 4)
+        else:
+            param_pos_idx = slice(2, 4)
+            param_vel_idx = slice(4, 6)
+        
+        phys_pos = (norm_pos + 1) / 2 * width[param_pos_idx] + mins[param_pos_idx]
+        phys_vel = (norm_vel + 1) / 2 * width[param_vel_idx] + mins[param_vel_idx]
+        
+        phys_state = torch.cat([phys_pos, phys_vel], dim=1)
+        
+        # 4. 获取梯度
+        h_val, grad_phys = self.neural_cbf.get_correction_gradient(phys_state)
+        
+        # 5. [关键修改] 梯度修正逻辑：从“暴力推”改为“温柔推”
+        
+        # 将物理梯度映射回 Normalized 空间
+        # grad_norm 代表：为了让 h 增加 1，归一化坐标需要移动多少
+        scale = width[param_pos_idx] / 2
+        grad_norm = grad_phys * scale
+        
+        # --- 新逻辑 Start ---
+        
+        # A. 缩放系数 (Learning Rate)
+        # 这个系数决定了我们听 CBF 的话听多少。0.1 比较温和。
+        alpha = 0.2 
+        
+        # B. 计算原始修正量 (保留梯度的大小信息！)
+        # 之前我们除以了模长，丢掉了“危险程度”的信息，导致微小危险也被放大
+        # 现在我们保留它：危险大 -> 梯度大 -> 修正大
+        raw_delta = grad_norm * alpha
+        
+        # C. 截断 (Clamping) - 防止瞬移
+        # 限制单步修正的最大幅度，例如归一化空间的 0.02 (约等于地图的 1%)
+        # 这样即使梯度爆炸，也不会把轨迹踢出地图
+        clip_value = 0.02
+        delta = torch.clamp(raw_delta, -clip_value, clip_value)
+        
+        # D. 只在不安全时修正
+        # h < 0.05 表示进入警戒圈
+        is_unsafe = (h_val < 0.05).float()
+        
+        # 最终修正量
+        delta = delta * is_unsafe
+        
+        # --- 新逻辑 End ---
+
+        # 6. 调试打印 (可选)
+        # if is_unsafe.sum() > 0:
+        #    idx = torch.where(is_unsafe)[0][0]
+        #    print(f"Danger! h={h_val[idx].item():.2f} | Delta={delta[idx].cpu().numpy()}")
+
+        # 7. 应用修正
+        xp1_new = xp1_flat.clone()
+        xp1_new[:, 2:4] += delta
+        
+        return xp1_new.view(original_shape)
+
     @torch.no_grad()
     def p_sample(self, x, cond, t):
         b, *_, device = *x.shape, x.device
@@ -1061,7 +1283,10 @@ class GaussianDiffusion(nn.Module):
         ####################### SafeDiffusers 
         # x = xp1 # for training only
         # x = self.invariance(x, xp1)    # RoS
-        x = self.invariance_cf(x, xp1)  # RoS closed form
+        # x = self.invariance_cf(x, xp1)  # RoS closed form
+
+        x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
+
         # x = self.invariance_relax(x, xp1, t) # ReS
         # x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    
         # x = self.invariance_time(x, xp1, t)   # TVS
@@ -1097,8 +1322,8 @@ class GaussianDiffusion(nn.Module):
 
         # train模式safe补丁
 
-      # self.safe1 = torch.tensor(0.0, device=device)  # 或者 device='cuda' / x.device
-      # self.safe2 = torch.tensor(0.0, device=device)
+        # self.safe1 = torch.tensor(0.0, device=device)  # 或者 device='cuda' / x.device
+        # self.safe2 = torch.tensor(0.0, device=device)
 
         return x
 
@@ -1120,8 +1345,28 @@ class GaussianDiffusion(nn.Module):
             timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
             x = self.p_sample(x, cond, timesteps)
             x = apply_conditioning(x, cond, self.action_dim)
-            safe1.append(self.safe1.unsqueeze(0))
-            safe2.append(self.safe2.unsqueeze(0))
+
+            
+            # safe1.append(self.safe1.unsqueeze(0))
+            # safe2.append(self.safe2.unsqueeze(0))
+            # ================= [修复开始] =================
+        # 兼容性修复：防止 safe1/safe2 是 int 类型时报错
+        
+        # 处理 safe1
+            if isinstance(self.safe1, torch.Tensor):
+                safe1.append(self.safe1.unsqueeze(0))
+            else:
+            # 如果是 int/float，先转成 Tensor 再存
+                safe1.append(torch.tensor([self.safe1], device=x.device))
+
+        # 处理 safe2
+            if isinstance(self.safe2, torch.Tensor):
+                safe2.append(self.safe2.unsqueeze(0))
+            else:
+                safe2.append(torch.tensor([self.safe2], device=x.device))
+            
+        # ================= [修复结束] =================
+
             progress.update({'t': i})
 
             if return_diffusion: diffusion.append(x)

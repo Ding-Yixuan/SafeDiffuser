@@ -72,6 +72,7 @@ for iter in range(1):   # num of testing runs
 
     ## set conditioning xy position to be the goal
     target = env._target
+    print(f"目标点 (Target) 坐标: {target}")
     cond = {
         diffusion.horizon - 1: np.array([*target, 0, 0]),
     }
