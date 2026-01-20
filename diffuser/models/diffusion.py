@@ -1033,11 +1033,21 @@ class GaussianDiffusion(nn.Module):
     @torch.no_grad()
     def invariance_neural(self, x, xp1):
         """
-        基于 TTC 神经网络的避障修正 (防瞬移版)
+        基于 TTC 神经网络的避障修正
         """
         if not hasattr(self, 'neural_cbf'):
             return xp1
 
+        config = getattr(self, 'cbf_config', {})
+        # 读取 Alpha (力度)
+        # alpha = config.get('alpha', 0.05) 
+        # 读取 Clip (截断)
+        # clip_value = config.get('clip', 0.01)
+        # 读取 Threshold (警戒线)
+        # threshold = config.get('threshold', 0.05)
+        alpha = config.get('alpha', 0.11) 
+        clip_value = config.get('clip', 0.01)
+        threshold = config.get('threshold', 0.03)
         # 1. 准备数据
         original_shape = xp1.shape
         xp1_flat = xp1.view(-1, xp1.shape[-1])
@@ -1071,33 +1081,22 @@ class GaussianDiffusion(nn.Module):
         # 4. 获取梯度
         h_val, grad_phys = self.neural_cbf.get_correction_gradient(phys_state)
         
-        # 5. [关键修改] 梯度修正逻辑：从“暴力推”改为“温柔推”
+        # 5.  梯度修正逻辑
         
         # 将物理梯度映射回 Normalized 空间
         # grad_norm 代表：为了让 h 增加 1，归一化坐标需要移动多少
         scale = width[param_pos_idx] / 2
         grad_norm = grad_phys * scale
         
-        # --- 新逻辑 Start ---
-        
-        # A. 缩放系数 (Learning Rate)
-        # 这个系数决定了我们听 CBF 的话听多少。0.1 比较温和。
-        alpha = 0.05 
-        
-        # B. 计算原始修正量 (保留梯度的大小信息！)
-        # 之前我们除以了模长，丢掉了“危险程度”的信息，导致微小危险也被放大
-        # 现在我们保留它：危险大 -> 梯度大 -> 修正大
+        # --- 新逻辑 Start ---        
+        # 计算原始修正量：危险大 -> 梯度大 -> 修正大
         raw_delta = grad_norm * alpha
         
-        # C. 截断 (Clamping) - 防止瞬移
-        # 限制单步修正的最大幅度，例如归一化空间的 0.02 (约等于地图的 1%)
-        # 这样即使梯度爆炸，也不会把轨迹踢出地图
-        clip_value = 0.01
+        # 截断 (Clamping) - 防止瞬移
         delta = torch.clamp(raw_delta, -clip_value, clip_value)
         
-        # D. 只在不安全时修正
-        # h < 0.05 表示进入警戒圈
-        is_unsafe = (h_val < 0.05).float()
+        # 只在不安全时修正
+        is_unsafe = (h_val < threshold).float()
         
         # 最终修正量
         delta = delta * is_unsafe
@@ -1115,6 +1114,94 @@ class GaussianDiffusion(nn.Module):
         
         return xp1_new.view(original_shape)
 
+
+    # @torch.no_grad()
+    # def invariance_neural(self, x, xp1):
+    #     # 1. 检查模块是否存在
+    #     has_cbf = hasattr(self, 'neural_cbf')
+        
+    #     # 2. 读取配置
+    #     config = getattr(self, 'cbf_config', {})
+        
+    #     # === [强制体检] 只在前 3 个时间步打印，避免刷屏 ===
+    #     # 我们利用 x 的形状或其他特征来判断是不是第一次调用，或者简单点，直接打印
+    #     # 为了防止刷屏，我们只在 config 为空或者 neural_cbf 缺失时疯狂打印
+        
+    #     print_debug = False
+    #     if not hasattr(self, '_debug_counter'):
+    #         self._debug_counter = 0
+        
+    #     if self._debug_counter < 3: # 只打前 3 次
+    #         print_debug = True
+    #         self._debug_counter += 1
+            
+    #     if print_debug:
+    #         print(f"\n[CBF DIAGNOSIS] Step {self._debug_counter}")
+    #         print(f"  > 模块挂载状态: {'✅ 正常' if has_cbf else '❌ 缺失 (致命错误!)'}")
+    #         print(f"  > 接收到的参数: {config}")
+            
+    #         if not has_cbf:
+    #             print("  > ⚠️ 警告：因为模块缺失，避障直接跳过！请检查 plan_cbf.py 的挂载逻辑。")
+
+    #     if not has_cbf:
+    #         return xp1
+
+    #     # 3. 正常逻辑
+    #     alpha = config.get('alpha', 0.11) 
+    #     clip_value = config.get('clip', 0.01)
+    #     threshold = config.get('threshold', 0.03)
+
+    #     # ... (数据准备代码) ...
+    #     original_shape = xp1.shape
+    #     xp1_flat = xp1.view(-1, xp1.shape[-1])
+        
+    #     if isinstance(self.norm_mins, torch.Tensor):
+    #         mins = self.norm_mins.clone().detach().to(xp1.device)
+    #         maxs = self.norm_maxs.clone().detach().to(xp1.device)
+    #     else:
+    #         mins = torch.tensor(self.norm_mins, device=xp1.device, dtype=torch.float32)
+    #         maxs = torch.tensor(self.norm_maxs, device=xp1.device, dtype=torch.float32)
+            
+    #     width = maxs - mins
+        
+    #     # ... (反归一化代码) ...
+    #     norm_pos = xp1_flat[:, 2:4]
+    #     norm_vel = xp1_flat[:, 4:6]
+        
+    #     if len(mins) == 4:
+    #         param_pos_idx = slice(0, 2)
+    #         param_vel_idx = slice(2, 4)
+    #     else:
+    #         param_pos_idx = slice(2, 4)
+    #         param_vel_idx = slice(4, 6)
+        
+    #     phys_pos = (norm_pos + 1) / 2 * width[param_pos_idx] + mins[param_pos_idx]
+    #     phys_vel = (norm_vel + 1) / 2 * width[param_vel_idx] + mins[param_vel_idx]
+    #     phys_state = torch.cat([phys_pos, phys_vel], dim=1)
+        
+    #     # 4. 获取梯度
+    #     h_val, grad_phys = self.neural_cbf.get_correction_gradient(phys_state)
+        
+    #     if print_debug:
+    #         print(f"  > h_val (安全值): min={h_val.min().item():.4f}, max={h_val.max().item():.4f}")
+    #         unsafe_cnt = (h_val < threshold).sum().item()
+    #         print(f"  > 危险点数量: {unsafe_cnt}")
+
+    #     # 5. 计算修正
+    #     scale = width[param_pos_idx] / 2
+    #     grad_norm = grad_phys * scale
+        
+    #     raw_delta = grad_norm * alpha
+    #     delta = torch.clamp(raw_delta, -clip_value, clip_value)
+    #     is_unsafe = (h_val < threshold).float()
+    #     delta = delta * is_unsafe
+        
+    #     xp1_new = xp1_flat.clone()
+    #     xp1_new[:, 2:4] += delta
+        
+    #     return xp1_new.view(original_shape)
+    
+    
     @torch.no_grad()
     def p_sample(self, x, cond, t):
         b, *_, device = *x.shape, x.device
@@ -1202,9 +1289,9 @@ class GaussianDiffusion(nn.Module):
         x = apply_conditioning(x, cond, self.action_dim)
 
         if return_diffusion: diffusion = [x]
-
-        progress = utils.Progress(self.n_timesteps) if verbose else utils.Silent()
-        safe1, safe2 = [], []
+        progress = utils.Silent()
+        # progress = utils.Progress(self.n_timesteps) if verbose else utils.Silent()
+        # safe1, safe2 = [], []
         for i in reversed(range(0, self.n_timesteps)):  #-50 change here for the number of diffusion steps,
             if i < 0:
                 i = 0
@@ -1218,18 +1305,18 @@ class GaussianDiffusion(nn.Module):
             # ================= [修复开始] =================
         # 兼容性修复：防止 safe1/safe2 是 int 类型时报错
         
-        # 处理 safe1
-            if isinstance(self.safe1, torch.Tensor):
-                safe1.append(self.safe1.unsqueeze(0))
-            else:
-            # 如果是 int/float，先转成 Tensor 再存
-                safe1.append(torch.tensor([self.safe1], device=x.device))
+        # # 处理 safe1
+        #     if isinstance(self.safe1, torch.Tensor):
+        #         safe1.append(self.safe1.unsqueeze(0))
+        #     else:
+        #     # 如果是 int/float，先转成 Tensor 再存
+        #         safe1.append(torch.tensor([self.safe1], device=x.device))
 
-        # 处理 safe2
-            if isinstance(self.safe2, torch.Tensor):
-                safe2.append(self.safe2.unsqueeze(0))
-            else:
-                safe2.append(torch.tensor([self.safe2], device=x.device))
+        # # 处理 safe2
+        #     if isinstance(self.safe2, torch.Tensor):
+        #         safe2.append(self.safe2.unsqueeze(0))
+        #     else:
+        #         safe2.append(torch.tensor([self.safe2], device=x.device))
             
         # ================= [修复结束] =================
 
@@ -1237,8 +1324,8 @@ class GaussianDiffusion(nn.Module):
 
             if return_diffusion: diffusion.append(x)
         
-        self.safe1 = torch.cat(safe1, dim=0)
-        self.safe2 = torch.cat(safe2, dim=0)
+        # self.safe1 = torch.cat(safe1, dim=0)
+        # self.safe2 = torch.cat(safe2, dim=0)
 
         progress.close()
         # pdb.set_trace()

@@ -117,7 +117,8 @@ comp_time = []
 elbo_batch = []
 success = 0
 import time
-for iter in range(1):   # num of testing runs
+num=10
+for iter in range(num):   # num of testing runs
     print("step: ", iter, "/100")
 
     observation = env.reset()    #array([ 0.94875744,  8.93648809, -0.01347715,  0.06358764])
@@ -150,7 +151,7 @@ for iter in range(1):   # num of testing runs
 
             cond[0] = observation
             start = time.time()
-            action, samples, diffusion_paths, safe1, safe2, elbo = policy(cond, batch_size=args.batch_size)
+            action, samples, diffusion_paths, _, _, elbo = policy(cond, batch_size=args.batch_size)
             end = time.time()
             comp_time.append(end-start)
             elbo_batch.append(elbo)
@@ -163,24 +164,44 @@ for iter in range(1):   # num of testing runs
             diffusion_paths = diffusion_paths[0]
 
             
-            ##################################################save videos/images
-            fullpath = join(args.savepath, f'{iter}.png')
-            renderer.composite(fullpath, samples.observations, ncol=1)
-            #########################################s################# 8/3/2023
-            # diffusion_sm = smooth(diffusion_paths)    # smooth the generated traj.
-            diffusion_sm = diffusion_paths            # do not smooth the generated traj.
-            renderer.render_diffusion(join(args.savepath, f'diffusion.mp4'), diffusion_sm)
-
-            # makedirs(join(args.savepath, 'trap'))
-            # fullpath = join(args.savepath, f'trap/{iter}.png')
+            # ##################################################save videos/images
+            # fullpath = join(args.savepath, f'{iter}.png')
             # renderer.composite(fullpath, samples.observations, ncol=1)
+            # #########################################s################# 8/3/2023
+            # # diffusion_sm = smooth(diffusion_paths)    # smooth the generated traj.
+            # diffusion_sm = diffusion_paths            # do not smooth the generated traj.
+            # renderer.render_diffusion(join(args.savepath, f'diffusion.mp4'), diffusion_sm)
 
-            diff_step = diffusion_sm.shape[0]  
-            makedirs(join(args.savepath, 'png'))
-            for kk in range(diff_step):
-                imgpath = join(args.savepath, f'png/{kk}.png')
-                renderer.composite(imgpath, diffusion_sm[kk:kk+1], ncol=1)
-            ##################################################end saving videos/images
+            # # makedirs(join(args.savepath, 'trap'))
+            # # fullpath = join(args.savepath, f'trap/{iter}.png')
+            # # renderer.composite(fullpath, samples.observations, ncol=1)
+
+            # diff_step = diffusion_sm.shape[0]  
+            # makedirs(join(args.savepath, 'png'))
+            # for kk in range(diff_step):
+            #     imgpath = join(args.savepath, f'png/{kk}.png')
+            #     renderer.composite(imgpath, diffusion_sm[kk:kk+1], ncol=1)
+            # ##################################################end saving videos/images
+
+            # 添加了10次循环的保存的逻辑
+            if iter == num - 1:
+                print("正在保存最后一次运行的可视化结果...")
+                
+                # 保存规划的轨迹图
+                fullpath = join(args.savepath, f'final_plan_{iter}.png')
+                renderer.composite(fullpath, samples.observations, ncol=1)
+                
+                # 保存视频
+                diffusion_sm = diffusion_paths
+                renderer.render_diffusion(join(args.savepath, f'final_diffusion.mp4'), diffusion_sm)
+
+                # 保存每一帧 (如果觉得不需要可以把下面这几行也注释掉)
+                diff_step = diffusion_sm.shape[0]  
+                png_dir = join(args.savepath, 'final_png_sequence')
+                makedirs(png_dir)
+                for kk in range(diff_step):
+                    imgpath = join(png_dir, f'{kk}.png')
+                    renderer.composite(imgpath, diffusion_sm[kk:kk+1], ncol=1)
 
         # ####
         if t < len(sequence) - 1:
