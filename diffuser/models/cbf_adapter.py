@@ -9,7 +9,7 @@ MAZE_MAP_LARGE = \
 "#OOOO#OOOOO#\\"+\
 "#O##O#O#O#O#\\"+\
 "#OOOOOO#OOO#\\"+\
-"#O#######O#\\"+\
+"#O####O###O#\\"+\
 "#OO#O#OOOOO#\\"+\
 "##O#O#O#O###\\"+\
 "#OO#OOO#OGO#\\"+\

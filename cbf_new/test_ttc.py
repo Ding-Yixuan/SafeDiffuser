@@ -4,9 +4,7 @@ import torch
 import torch.optim as optim
 from diffuser.models.cbf_network import CBFNetwork
 
-# ==========================================
 # 1. 稳健的 TTC 采样器 (参考 SafetyGym)
-# ==========================================
 class RobustTTCSampler:
     def __init__(self):
         # 墙壁范围 (Maze2D wall 0.5 + Robot 0.15)

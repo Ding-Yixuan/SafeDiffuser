@@ -14,9 +14,7 @@ import matplotlib.patches as patches
 from diffuser.utils import Parser, load_diffusion, load_environment
 from diffuser.models.cbf_adapter import NeuralBarrierAdapter
 
-# =========================================================
 # 1. 设置与加载
-# =========================================================
 class CompareParser(Parser):
     dataset: str = 'maze2d-large-v1'
     config: str = 'config.maze2d'
@@ -35,10 +33,7 @@ env = diffusion_experiment.renderer.env # 获取环境以读取地图
 # 确保模型在 GPU
 diffusion.to(device)
 
-# =========================================================
 # 稳健地注入归一化参数
-# =========================================================
-print("🔧 正在注入归一化参数给 Diffusion 模型...")
 normalizer = dataset.normalizer
 
 # 尝试从 observation 的归一化器中提取参数
@@ -53,29 +48,25 @@ try:
         diffusion.norm_mins = normalizer.mins
         diffusion.norm_maxs = normalizer.maxs
     else:
-        # 如果都找不到，打印出来看看它是何方神圣
-        print(f"❌ 错误: 无法找到 mins/maxs, normalizer 包含属性: {dir(normalizer)}")
+        # 如果都找不到
+        print(f"无法找到 mins/maxs, normalizer 包含属性: {dir(normalizer)}")
         raise AttributeError("Normalizer structure unknown")
 
     print(f"   -> Mins shape: {diffusion.norm_mins.shape}, Values: {diffusion.norm_mins}")
     print(f"   -> Maxs shape: {diffusion.norm_maxs.shape}, Values: {diffusion.norm_maxs}")
 
 except Exception as e:
-    print(f"⚠️ 警告: 归一化参数注入失败: {e}")
-    # 防止后面 crash，给个假的兜底（虽然效果会不对，但至少能跑）
-    diffusion.norm_mins = np.array([-1]*6)
-    diffusion.norm_maxs = np.array([1]*6)
+    print(f"归一化参数注入失败: {e}")
 
-# 将 numpy 转为 tensor (为了保险)
+
+# 将 numpy 转为 tensor
 if not isinstance(diffusion.norm_mins, torch.Tensor):
     diffusion.norm_mins = torch.tensor(diffusion.norm_mins, device=device, dtype=torch.float32)
     diffusion.norm_maxs = torch.tensor(diffusion.norm_maxs, device=device, dtype=torch.float32)
-# =========================================================
 
-# =========================================================
+
+
 # 2. 定义对比函数
-# =========================================================
-
 def generate_trajectory(cond, use_cbf=False):
     """
     生成一条轨迹
@@ -85,9 +76,8 @@ def generate_trajectory(cond, use_cbf=False):
     if use_cbf:
         if not hasattr(diffusion, 'neural_cbf') or diffusion.neural_cbf is None:
             diffusion.neural_cbf = NeuralBarrierAdapter(device=device)
-            
-            # [关键修复] 强制把环境里的真实墙壁同步给 CBF
-            # 既然画图是对的，我们就用画图的逻辑来生成墙壁坐标
+
+            # 生成墙壁坐标
             maze_arr = env.maze_arr
             h, w = maze_arr.shape
             real_walls = []
@@ -95,24 +85,26 @@ def generate_trajectory(cond, use_cbf=False):
             for r in range(h):
                 for c in range(w):
                     if maze_arr[r, c] == 10: # 10 是墙
-                        # 使用和画图一模一样的坐标变换
-                        # 画图逻辑: x = c, y = h - 1 - r
-                        wall_x = float(c)
-                        wall_y = float(h - 1 - r)
-                        real_walls.append([wall_x, wall_y])
+                        # x = c, y = h - 1 - r
+                        # wall_x = float(c)
+                        # wall_y = float(h - 1 - r)
+                        # real_walls.append([wall_x, wall_y])
+                        # 为与 NeuralBarrierAdapter._parse_maze 保持一致，使用 (col + 1.0, row + 1.0)
+                        # adapter 默认解析时使用的是 1-based 的坐标: [w+1.0, h+1.0]
+                        real_walls.append([float(c) + 1.0, float(r) + 1.0])
             
-            # 覆盖 CBF 里的旧墙壁数据
+            # 使用动态的墙壁数据
             diffusion.neural_cbf.wall_centers_tensor = torch.tensor(
                 real_walls, dtype=torch.float32, device=device
             )
-            print(f"✅ 已同步环境中的 {len(real_walls)} 个墙壁坐标到 CBF！")
+            print(f"已同步真实环境 {len(real_walls)} 个墙壁坐标到 CBF！")
             
-        print("⚡ [Mode] CBF 避障已开启")
+        print("CBF 避障开启")
     else:
         if hasattr(diffusion, 'neural_cbf'):
             saved_adapter = diffusion.neural_cbf
             del diffusion.neural_cbf 
-        print("💀 [Mode] CBF 避障已关闭 (Baseline)")
+        print("CBF 避障已关闭 (Baseline)")
 
     # 2. 数据预处理：归一化 + 转 Tensor
     cond_batch = {}
@@ -123,12 +115,11 @@ def generate_trajectory(cond, use_cbf=False):
         cond_batch[k] = torch.tensor(v_norm_batch, dtype=torch.float32, device=device)
     
     # 3. 计算正确的轨迹总维度 (Action + Observation)
-    # 修复点：不能只用 observation_dim (4)，要加上 action_dim (2)，总共是 6
     transition_dim = diffusion.observation_dim + diffusion.action_dim
 
     # 4. 运行扩散采样
     samples = diffusion.p_sample_loop(
-        shape=(1, diffusion.horizon, transition_dim), # <--- 修复了这里的形状
+        shape=(1, diffusion.horizon, transition_dim), 
         cond=cond_batch
     )
     
@@ -143,15 +134,13 @@ def generate_trajectory(cond, use_cbf=False):
     
     return traj_normalized
 
-# =========================================================
+
 # 3. 运行对比实验
-# =========================================================
+
 
 # --- A. 设定起点和终点 ---
-# 我们找一个经典的“穿墙”场景
-# 在 Maze2D Large 中，(2,2) 到 (4,2) 中间通常有墙
-start_pos = np.array([1.0, 1.0]) 
-target_pos = np.array([5.0, 6.0]) # 你可以改这个坐标测试不同的墙
+start_pos = np.array([7.0, 1.0]) 
+target_pos = np.array([7.0, 9.0]) # 你可以改这个坐标测试不同的墙
 
 # 构造条件
 cond = {
@@ -166,10 +155,9 @@ traj_unsafe = generate_trajectory(cond, use_cbf=False)
 print("\n=== 开始生成 Safe 轨迹 (有避障) ===")
 traj_safe = generate_trajectory(cond, use_cbf=True)
 
-# =========================================================
+
 # 4. 像 plan_maze2d 一样直接画矩阵
-# =========================================================
-print("\n🎨 正在绘制最终对比图 (官方对齐逻辑)...")
+print("\n绘制最终对比图")
 
 # 1. 获取迷宫矩阵 (真理之源)
 # maze_arr: 0是路，10或11是墙
@@ -190,6 +178,123 @@ ax.imshow(maze_arr, cmap='gray', origin='upper')
 # Unnormalize 拿到物理坐标
 traj_unsafe_phys = dataset.normalizer.unnormalize(traj_unsafe, 'observations')
 traj_safe_phys = dataset.normalizer.unnormalize(traj_safe, 'observations')
+
+# --- 诊断：计算轨迹到墙的最小距离、碰撞统计，并采样 h/grad ---
+def trajectory_collision_and_cbf_stats(traj_phys, adapter, threshold=0.5, sample_n=8):
+    """
+    traj_phys: (T, 2) array with [row, col]
+    adapter: diffusion.neural_cbf (NeuralBarrierAdapter)
+    threshold: 距离阈值，低于认为碰撞（单位为格子单位）
+    返回: dict with min_dists, collision_mask, sample_h_grad
+    """
+    # wall_centers_tensor 存储为 (col+1, row+1)
+    wall_centers = adapter.wall_centers_tensor.detach().cpu().numpy()  # (N,2) as (col+1, row+1)
+
+    # 将 traj_phys ([row, col]) 转换为 adapter 坐标系: (col+1, row+1)
+    traj_adapter = np.stack([traj_phys[:, 1] + 1.0, traj_phys[:, 0] + 1.0], axis=1)
+
+    # 计算每个轨迹点到所有墙心的最小距离
+    dists = np.sqrt(((traj_adapter[:, None, :] - wall_centers[None, :, :]) ** 2).sum(axis=2))  # (T, N)
+    min_dists = dists.min(axis=1)
+    collisions = min_dists < threshold
+
+    # 采样若干点计算 h 和 grad（在 adapter 坐标系下构造 phys_state）
+    T = traj_adapter.shape[0]
+    idxs = np.linspace(0, T - 1, min(sample_n, T)).astype(int)
+    sample_h = []
+    sample_grad = []
+    with torch.no_grad():
+        for i in idxs:
+            pos = traj_adapter[i]
+            state = torch.tensor([[pos[0], pos[1], 0.0, 0.0]], dtype=torch.float32, device=adapter.device)
+            h_val, grad = adapter.get_correction_gradient(state)
+            sample_h.append(float(h_val.cpu().numpy().ravel()[0]))
+            sample_grad.append(grad.cpu().numpy().ravel().tolist())
+
+    return {
+        'min_dists': min_dists,
+        'collisions': collisions,
+        'collision_count': int(collisions.sum()),
+        'sample_idxs': idxs.tolist(),
+        'sample_h': sample_h,
+        'sample_grad': sample_grad,
+    }
+
+
+print("\n--- 运行碰撞与 CBF 诊断 ---")
+if hasattr(diffusion, 'neural_cbf') and diffusion.neural_cbf is not None:
+    adapter = diffusion.neural_cbf
+    stats_safe = trajectory_collision_and_cbf_stats(traj_safe_phys[:, :2], adapter)
+    stats_unsafe = trajectory_collision_and_cbf_stats(traj_unsafe_phys[:, :2], adapter)
+
+    print(f"Safe traj collisions: {stats_safe['collision_count']} / {len(stats_safe['min_dists'])}")
+    print(f"Unsafe traj collisions: {stats_unsafe['collision_count']} / {len(stats_unsafe['min_dists'])}")
+    print("Safe sample h/grad:")
+    for i, h in enumerate(stats_safe['sample_h']):
+        print(f" idx {stats_safe['sample_idxs'][i]}: h={h:.4f}, grad={stats_safe['sample_grad'][i]}")
+
+    # 额外诊断：哪些碰撞点实际上对应的地图像素不是墙（灰色区域）？打印详细信息
+    bad_collision_idxs = []
+    for i in np.where(stats_safe['collisions'])[0]:
+        r = int(round(traj_safe_phys[i, 0]))
+        c = int(round(traj_safe_phys[i, 1]))
+        # 防越界
+        if r < 0 or r >= maze_arr.shape[0] or c < 0 or c >= maze_arr.shape[1]:
+            continue
+        if maze_arr[r, c] != 10:
+            bad_collision_idxs.append(i)
+
+    if len(bad_collision_idxs) > 0:
+        print("\n被判为碰撞但地图像素并非墙 (maze_arr != 10) 的轨迹索引与详情：")
+        wc = adapter.wall_centers_tensor.detach().cpu().numpy()
+        for i in bad_collision_idxs:
+            r = int(round(traj_safe_phys[i, 0]))
+            c = int(round(traj_safe_phys[i, 1]))
+            pos_adapter = np.array([c + 1.0, r + 1.0])
+            dists_to_wc = np.linalg.norm(wc - pos_adapter[None, :], axis=1)
+            nearest_idx = int(np.argmin(dists_to_wc))
+            nearest_wc = wc[nearest_idx]
+            nearest_dist = float(dists_to_wc[nearest_idx])
+            print(f" idx={i}, traj_pos=(row={r},col={c}), maze_val={maze_arr[r,c]}, min_dist={stats_safe['min_dists'][i]:.3f}")
+            print(f"   nearest_wall_center_idx={nearest_idx}, center(col+1,row+1)={nearest_wc.tolist()}, dist_to_center={nearest_dist:.3f}")
+            # 打印附近地图小窗口
+            r0 = max(0, r-2); r1 = min(maze_arr.shape[0], r+3)
+            c0 = max(0, c-2); c1 = min(maze_arr.shape[1], c+3)
+            print("   nearby maze window (rows %d:%d, cols %d:%d):" % (r0, r1, c0, c1))
+            print(maze_arr[r0:r1, c0:c1])
+    else:
+        print("\n没有发现“灰色区域却被判碰撞”的点（maze_arr != 10 的碰撞点）。")
+
+    # 保存带墙心与碰撞标记的诊断图
+    fig2, ax2 = plt.subplots(figsize=(12, 12))
+    ax2.imshow(maze_arr, cmap='gray', origin='upper')
+
+    # 画轨迹
+    ax2.plot(traj_unsafe_phys[:, 1], traj_unsafe_phys[:, 0], color='red', linestyle='--', linewidth=3, label='Original (Unsafe)')
+    ax2.plot(traj_safe_phys[:, 1], traj_safe_phys[:, 0], color='#00FF00', linewidth=3, label='SafeDiffuser (CBF)')
+
+    # 画墙心（还原到像素坐标：col+1,row+1 -> col,row）
+    wc = adapter.wall_centers_tensor.detach().cpu().numpy()
+    if wc.shape[0] > 0:
+        ax2.scatter(wc[:, 0] - 1.0, wc[:, 1] - 1.0, c='yellow', s=10, alpha=0.6, label='wall_centers')
+
+    # 标出碰撞点（safe）
+    coll_idxs = np.where(stats_safe['collisions'])[0]
+    if coll_idxs.size > 0:
+        ax2.scatter(traj_safe_phys[coll_idxs, 1], traj_safe_phys[coll_idxs, 0], c='magenta', s=50, marker='x', label='collisions')
+
+    ax2.scatter(start_pos[1], start_pos[0], color='blue', s=400, marker='*', label='Start', zorder=10)
+    ax2.scatter(target_pos[1], target_pos[0], color='gold', s=400, marker='X', label='Target', zorder=10)
+    ax2.set_aspect('equal')
+    ax2.axis('off')
+    ax2.legend(loc='upper right')
+    diag_path = 'final_comparison_diagnostics.png'
+    plt.savefig(diag_path, dpi=150, bbox_inches='tight')
+    print(f"诊断图已保存: {diag_path}")
+else:
+    print("未检测到 diffusion.neural_cbf，跳过 CBF 诊断")
+
+# --- 诊断结束 ---
 
 # 5. [核心对齐] 坐标映射
 # Maze2D 的物理坐标定义：
@@ -232,103 +337,3 @@ save_path = "final_comparison_perfect.png"
 plt.savefig(save_path, dpi=150, bbox_inches='tight')
 print(f"✅ 完美对齐图已生成: {save_path}")
 
-# # =========================================================
-# # 4. [科学评估版] 自动检测收敛 + 虚实结合画图 + 正确黑白
-# # =========================================================
-# print("\n🎨 正在绘制最终对比图 (科学评估版)...")
-
-# # 1. 获取迷宫矩阵
-# maze_arr = env.maze_arr 
-
-# # 2. 准备画布
-# fig, ax = plt.subplots(figsize=(12, 12))
-
-# # 3. [背景修正] 强制黑墙白路
-# ax.imshow(maze_arr, cmap='gray', origin='upper')
-
-# # 4. 准备轨迹数据
-# traj_unsafe_phys = dataset.normalizer.unnormalize(traj_unsafe, 'observations')
-# traj_safe_phys = dataset.normalizer.unnormalize(traj_safe, 'observations')
-
-# # 坐标提取 (注意：Index 0=Row/Height, Index 1=Col/Width)
-# unsafe_row = traj_unsafe_phys[:, 0]
-# unsafe_col = traj_unsafe_phys[:, 1]
-# safe_row = traj_safe_phys[:, 0]
-# safe_col = traj_safe_phys[:, 1]
-
-# # =========================================================
-# # 5. 定义收敛检测函数 (解决“回头路”视觉问题)
-# # =========================================================
-# def split_trajectory_by_convergence(traj_col, traj_row, target, dist_thr=0.5):
-#     """
-#     找到轨迹最后一次进入目标圈(dist_thr)并不再出来的时刻。
-#     """
-#     points = np.stack([traj_col, traj_row], axis=1) # (N, 2)
-#     # 注意：target_pos 是 [Row, Col]，这里我们要跟 points 里的 [Col, Row] 对齐
-#     # 所以 target 传入时应该是 [Target_Col, Target_Row]
-#     target_point = np.array(target)
-    
-#     # 1. 计算距离
-#     dists = np.linalg.norm(points - target_point, axis=1)
-    
-#     # 2. 判定入圈
-#     in_zone = dists < dist_thr
-    
-#     # 3. 倒着找第一个“出圈”的点
-#     out_of_zone_indices = np.where(~in_zone)[0]
-    
-#     if len(out_of_zone_indices) == 0:
-#         return 0 # 一直在终点
-#     elif len(out_of_zone_indices) == len(traj_col):
-#         return len(traj_col) # 从未收敛
-#     else:
-#         # 收敛点是最后一个出圈点的下一个点
-#         return out_of_zone_indices[-1] + 1
-
-# # 目标坐标 (用于画图和计算距离，必须是 [Col, Row])
-# target_plot = [target_pos[1], target_pos[0]]
-
-# # 计算截断点
-# idx_unsafe = split_trajectory_by_convergence(unsafe_col, unsafe_row, target_plot)
-# idx_safe = split_trajectory_by_convergence(safe_col, safe_row, target_plot)
-
-# # =========================================================
-# # 6. 画轨迹 (实线=赶路, 虚线=磨蹭)
-# # =========================================================
-
-# # --- A. Baseline (红色) ---
-# # 实线：有效赶路阶段
-# ax.plot(unsafe_col[:idx_unsafe], unsafe_row[:idx_unsafe], 
-#         color='red', linestyle='--', linewidth=3, label='Original (Active)')
-# # 虚线：到达后徘徊阶段 (透明度低)
-# if idx_unsafe < len(unsafe_col):
-#     ax.plot(unsafe_col[idx_unsafe:], unsafe_row[idx_unsafe:], 
-#             color='red', linestyle=':', linewidth=1, alpha=0.3)
-
-# # --- B. SafeDiffuser (绿色) ---
-# # 实线：有效赶路阶段
-# ax.plot(safe_col[:idx_safe], safe_row[:idx_safe], 
-#         color='#00FF00', linewidth=3, label='SafeDiffuser (Active)')
-# # 虚线：到达后徘徊阶段
-# if idx_safe < len(safe_col):
-#     ax.plot(safe_col[idx_safe:], safe_row[idx_safe:], 
-#             color='#00FF00', linestyle='-', linewidth=1, alpha=0.2)
-#     # 画一个圈标记“停车点”
-#     stop_idx = min(idx_safe, len(safe_col)-1)
-#     ax.scatter(safe_col[stop_idx], safe_row[stop_idx], 
-#                color='#00FF00', s=80, marker='o', edgecolors='white', zorder=5, label='Settled')
-
-# # 7. 画起点终点 (Col, Row)
-# ax.scatter(start_pos[1], start_pos[0], color='blue', s=400, marker='*', label='Start', zorder=10)
-# ax.scatter(target_pos[1], target_pos[0], color='gold', s=400, marker='X', label='Target', zorder=10)
-
-# # 8. 装饰
-# ax.legend(loc='upper right', fontsize=12, framealpha=0.9)
-# ax.set_title("SafeDiffuser Evaluation (Solid=Active, Fade=Settled)", fontsize=16)
-# ax.set_aspect('equal')
-# ax.axis('off')
-
-# # 保存
-# save_path = "final_comparison_scientific.png"
-# plt.savefig(save_path, dpi=150, bbox_inches='tight')
-# print(f"✅ 科学评估图已生成: {save_path}")

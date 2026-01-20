@@ -4,9 +4,8 @@ import torch
 import torch.optim as optim
 from diffuser.models.cbf_network import CBFNetwork
 
-# ==========================================
-# 1. 定义更智能的数据采样器
-# ==========================================
+
+# 1. 定义数据采样器
 class DataSampler:
     def __init__(self):
         # 墙壁定义：中心在 (0,0)，宽高 1.0 (即 x,y 范围 [-0.5, 0.5])
