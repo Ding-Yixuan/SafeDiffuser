@@ -199,7 +199,7 @@ class MuJoCoRenderer:
 
         if savepath is not None:
             imageio.imsave(savepath, images)
-            print(f'Saved {len(paths)} samples to: {savepath}')
+            # print(f'Saved {len(paths)} samples to: {savepath}')
 
         return images
 
@@ -248,7 +248,7 @@ class MuJoCoRenderer:
 
         frames = []
         for t in reversed(range(n_diffusion_steps)):
-            print(f'[ utils/renderer ] Diffusion: {t} / {n_diffusion_steps}')
+            # print(f'[ utils/renderer ] Diffusion: {t} / {n_diffusion_steps}')
 
             ## [ batch_size x horizon x observation_dim ]
             states_l = diffusion_path[t].reshape(batch_size, horizon, joined_dim)[:, :, :self.observation_dim]
@@ -379,7 +379,7 @@ class MazeRenderer:
         images = einops.rearrange(images,
             '(nrow ncol) H W C -> (nrow H) (ncol W) C', nrow=nrow, ncol=ncol)
         imageio.imsave(savepath, images)
-        print(f'Saved {len(paths)} samples to: {savepath}')
+        # print(f'Saved {len(paths)} samples to: {savepath}')
 
     
     def render_diffusion(self, savepath, diffusion_path, **video_kwargs):
@@ -393,7 +393,7 @@ class MazeRenderer:
 
         frame = []
         for t in range(n_diffusion_steps):
-            print(f'[ utils/renderer ] Diffusion: {t} / {n_diffusion_steps}')
+            # print(f'[ utils/renderer ] Diffusion: {t} / {n_diffusion_steps}')
 
             img = self.renders(diffusion_path[t])
             frame.append(img)

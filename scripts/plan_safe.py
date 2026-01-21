@@ -103,7 +103,41 @@ comp_time = []
 elbo_batch = []
 success = 0
 import time
-num=10
+num = 30
+best_safe_margin = -1.0
+best_score = -float('inf')
+best_trajectory = None
+runs_summary = []
+# ==============================================================================
+# 2. 碰撞检测
+# ==============================================================================
+print("正在构建碰撞检测用的物理墙壁坐标")
+referee_walls = []
+
+maze_env = env.unwrapped
+if hasattr(maze_env, 'maze_arr'):
+    hmap = maze_env.maze_arr
+    hh, ww = hmap.shape
+    for rr in range(hh):
+        for cc in range(ww):
+            if hmap[rr, cc] == 10: 
+                # Observation X = Map Row, Observation Y = Map Col
+                phys_x = float(rr)
+                phys_y = float(cc)
+                referee_walls.append([phys_x, phys_y]) 
+else:
+
+    if USE_CBF and hasattr(diffusion, 'neural_cbf'):
+        print("正在从 Adapter 转换坐标 (Swap XY)...")
+        adapter_walls = diffusion.neural_cbf.wall_centers_tensor.detach().cpu().numpy()
+        # Adapter: [c+1, r+1] -> 减1 -> [c, r] -> 交换 -> [r, c]
+        referee_walls = adapter_walls[:, [1, 0]] - 1.0
+
+walls_np = np.array(referee_walls, dtype=np.float32)
+print(f"{len(walls_np)} 个物理墙壁坐标 (Row->X, Col->Y)")
+
+
+
 for iter in range(num):   # num of testing runs
     print("step: ", iter, "/100")
 
@@ -127,6 +161,15 @@ for iter in range(num):   # num of testing runs
     rollout = [observation.copy()]
 
     total_reward = 0
+
+    # --- 诊断变量初始化 ---
+    per_step_collisions = [] 
+    per_step_min_d = []
+    collided_flag = False
+    min_dist_overall = float('inf')
+    COLLISION_RADIUS = 0.60
+
+
     for t in range(env.max_episode_steps):
 
         state = env.state_vector().copy()
@@ -139,7 +182,8 @@ for iter in range(num):   # num of testing runs
             end = time.time()
             comp_time.append(end-start)
             elbo_batch.append(elbo)
-            
+            current_trajectory = diffusion_paths[0]
+            current_samples = samples.observations
             actions = samples.actions[0]
             sequence = samples.observations[0]
             diffusion_paths = diffusion_paths[0]
@@ -177,9 +221,25 @@ for iter in range(num):   # num of testing runs
 
 
         # 碰撞检测
+        pos_xy = next_observation[:2].copy() # 机器人的真实物理坐标
         
+        if len(walls_np) > 0:
+            # 计算距离：使用校准后的 referee walls (walls_np)
+            dists = np.linalg.norm(walls_np - pos_xy, axis=1)
+            min_d = float(np.min(dists))
+        else:
+            min_d = float('inf')
 
+        per_step_min_d.append(min_d)
+        
+        if min_d < COLLISION_RADIUS:
+            per_step_collisions.append(True)
+            collided_flag = True
+        else:
+            per_step_collisions.append(False)
 
+        if min_d < min_dist_overall:
+            min_dist_overall = min_d
 
 
         score = env.get_normalized_score(total_reward)
@@ -190,13 +250,108 @@ for iter in range(num):   # num of testing runs
 
         observation = next_observation
 
-    if reward > 0.95:
-        success = success + 1
+
+#     print(f"Iter {iter}: Score = {score}")
+
+
+#     # 如果当前分数比历史最高分高，或者这是第一次运行
+#     if score > best_score:
+#         print(f"🌟 发现更好的路径！分数从 {best_score} 提升到 {score}，正在保存...")
+#         best_score = score
+        
+#         # 保存这个最好的结果（覆盖写入，始终保留最好的）
+#         fullpath = join(args.savepath, 'best_plan.png')
+#         renderer.composite(fullpath, current_samples, ncol=1)
+        
+#         renderer.render_diffusion(join(args.savepath, 'best_diffusion.mp4'), current_trajectory)
+#         print("最佳结果已保存")
+
+# # 本轮总结
+#     is_success = False
+#     if reward > 0.95:
+#         success = success + 1
+#         is_success = True
 
     
+    
+#     score_batch.append(score)
+
+#     # 打印本轮结果
+#     status_icon = "✅" if (is_success and not collided_flag) else "❌"
+#     print(f"{status_icon} [Round {iter+1}/{num}] "
+#           f"Goal: {is_success} | "
+#           f"Safe: {'✅' if not collided_flag else '❌'} | "
+#           f"MinDist: {min_dist_overall:.3f}m | "
+#           f"Score: {score:.4f}")
+
+#     # 保存单轮诊断数据
+#     makedirs(args.savepath)
+#     run_diag = {
+#         'run': int(iter),
+#         'reached_goal': bool(is_success),
+#         'collided': bool(collided_flag),
+#         'collision_steps': [int(i) for i, v in enumerate(per_step_collisions) if v] if len(per_step_collisions) > 0 else [],
+#         'min_distance_overall': float(min_dist_overall) if min_dist_overall != float('inf') else None,
+#         'score': float(score)
+#     }
+#     runs_summary.append(run_diag)
+
+# 1. 先判断本轮是否成功 (提到保存逻辑之前)
+    is_success = False
+    if reward > 0.95:
+        is_success = True
+    all_runs_dir = join(args.savepath, 'all_runs_vis')
+    makedirs(all_runs_dir)
+    status_str = "OK" if is_success else "FAIL"
+    img_filename = f'run_{iter:03d}_{status_str}_score_{score:.2f}.png'
+    
+    # 保存图片 (current_samples 是扩散模型生成的规划路径)
+    renderer.composite(join(all_runs_dir, img_filename), current_samples, ncol=1)
+
+    # 2. [核心修改] 保存逻辑：优先 Success，其次 Safety (MinDist)
+    # 逻辑：必须成功，且 (当前的最小距离 > 历史最好的最小距离)
+    if is_success:
+        if min_dist_overall > best_safe_margin:
+            print(f"🌟 发现更安全的成功路径！Run {iter}: MinDist 从 {best_safe_margin:.4f}m 提升到 {min_dist_overall:.4f}m (Score: {score:.4f})")
+            best_safe_margin = min_dist_overall
+            
+            # 保存结果
+            fullpath = join(args.savepath, 'best_safe_plan.png') # 改个名区分
+            renderer.composite(fullpath, current_samples, ncol=1)
+            
+            renderer.render_diffusion(join(args.savepath, 'best_safe_diffusion.mp4'), current_trajectory)
+            print("最佳安全结果已保存")
+    else:
+        # 如果没成功，即使距离很远也不保存（或者你可以保留一个 best_score 的备选逻辑，但为了纯粹性这里不加）
+        pass
+
+    print(f"Iter {iter}: Score = {score}, Success = {is_success}, MinDist = {min_dist_overall:.4f}")
+
+    # 3. 统计计数 (修复了之前的重复计数问题)
+    if is_success:
+        success = success + 1
     
     score_batch.append(score)
 
+    # 打印本轮详细状态
+    status_icon = "✅" if (is_success and not collided_flag) else "❌"
+    print(f"{status_icon} [Round {iter+1}/{num}] "
+          f"Goal: {is_success} | "
+          f"Safe: {'✅' if not collided_flag else '❌'} | "
+          f"MinDist: {min_dist_overall:.3f}m | "
+          f"Score: {score:.4f}")
+
+    # 保存单轮诊断数据
+    makedirs(args.savepath)
+    run_diag = {
+        'run': int(iter),
+        'reached_goal': bool(is_success),
+        'collided': bool(collided_flag),
+        'collision_steps': [int(i) for i, v in enumerate(per_step_collisions) if v] if len(per_step_collisions) > 0 else [],
+        'min_distance_overall': float(min_dist_overall) if min_dist_overall != float('inf') else None,
+        'score': float(score)
+    }
+    runs_summary.append(run_diag)
 
 elbo_batch = np.array(elbo_batch)
 print("elbo mean: ", np.mean(elbo_batch))
@@ -209,7 +364,10 @@ print("score mean: ", np.mean(score_batch))
 print("score std: ", np.std(score_batch))
 print("computation time: ", np.mean(comp_time))
 print("success rate: ", success)
-
+if best_safe_margin > 0:
+    print(f"Best Safe Margin (in successful runs): {best_safe_margin:.4f}m")
+else:
+    print("No successful runs recorded.")
 exit()
 
 
