@@ -110,7 +110,7 @@ def train():
 
     sampler = RobustTTCSampler()
     
-    print("🚀 开始 TTC 增强训练 (修复版)...")
+    print("TTC训练...")
     print(f"预测时间 (TTC Lookahead): {sampler.ttc_time}s")
     
     steps = 10000
@@ -168,8 +168,8 @@ def train():
             print(f"   Close (1.0, 0) : {h_close:.3f} (期望 > 0)")
             print(f"   TTC   (1.5, -2): {h_ttc:.3f} (期望 < 0 !!)")
 
-    torch.save(model.state_dict(), "cbf_maze2d.pth")
-    print("✅ 模型已保存")
+    torch.save(model.state_dict(), "cbf_maze2d_new.pth")
+    print("模型已保存")
 
 if __name__ == "__main__":
     train()

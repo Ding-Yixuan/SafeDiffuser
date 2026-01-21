@@ -118,6 +118,7 @@ elbo_batch = []
 success = 0
 import time
 num=10
+runs_summary = []
 for iter in range(num):   # num of testing runs
     print("step: ", iter, "/100")
 
@@ -162,6 +163,35 @@ for iter in range(num):   # num of testing runs
             actions = samples.actions[0]
             sequence = samples.observations[0]
             diffusion_paths = diffusion_paths[0]
+
+            # ------------------- prepare collision detection -------------------
+            # build wall centers tensor if available (adapter) or from maze_arr
+            if USE_CBF and hasattr(diffusion, 'neural_cbf') and getattr(diffusion.neural_cbf, 'wall_centers_tensor', None) is not None:
+                wall_centers = diffusion.neural_cbf.wall_centers_tensor.detach().cpu().numpy()
+            else:
+                # fallback: build from maze_arr if present
+                wall_centers = []
+                if hasattr(maze_env, 'maze_arr'):
+                    hmap = maze_env.maze_arr
+                    hh, ww = hmap.shape
+                    for rr in range(hh):
+                        for cc in range(ww):
+                            if hmap[rr, cc] == 10 or hmap[rr, cc] == 11:
+                                wall_centers.append([float(cc) + 1.0, float(rr) + 1.0])
+                if len(wall_centers) > 0:
+                    wall_centers = np.array(wall_centers, dtype=np.float32)
+                else:
+                    wall_centers = np.zeros((0,2), dtype=np.float32)
+
+            # collision threshold (meters in same physical units as env positions)
+            COLLISION_RADIUS = 0.5
+
+            # per-step diagnostics containers for this run
+            per_step_collisions = []  # bool per timestep
+            per_step_min_d = []
+            per_step_positions = []
+            collided_flag = False
+            min_dist_overall = float('inf')
 
             
             # ##################################################save videos/images
@@ -268,10 +298,48 @@ for iter in range(num):   # num of testing runs
 
         observation = next_observation
 
+        # ---------------- record collision diagnostics for this new observation ----------------
+        # observation[:2] is the (x,y) position in physical coords
+        pos_xy = observation[:2].copy()
+        # save per-step position for later grid-based checks / plotting
+        per_step_positions.append([float(pos_xy[0]), float(pos_xy[1])])
+        # compute min distance to walls
+        if wall_centers.shape[0] > 0:
+            # wall_centers are in (col+1, row+1) -> x,y ordering same as pos_xy
+            dists = np.linalg.norm(wall_centers - pos_xy, axis=1)
+            min_d = float(np.min(dists))
+        else:
+            min_d = float('inf')
+
+        per_step_min_d.append(min_d)
+        if min_d < COLLISION_RADIUS:
+            per_step_collisions.append(True)
+            collided_flag = True
+        else:
+            per_step_collisions.append(False)
+
+        if min_d < min_dist_overall:
+            min_dist_overall = min_d
+
     if reward > 0.95:
         success = success + 1
 
     # score = 0
+
+    # ----------------- save per-run diagnostics -----------------
+    makedirs(args.savepath)
+    run_diag = {
+        'run': int(iter),
+        'reached_goal': bool(reward > 0.95),
+        'collided': bool(collided_flag),
+        'collision_steps': [int(i) for i, v in enumerate(per_step_collisions) if v] if len(per_step_collisions) > 0 else [],
+        'min_distance_overall': float(min_dist_overall) if min_dist_overall != float('inf') else None,
+        'per_step_min_d': per_step_min_d,
+        'per_step_positions': per_step_positions,
+        'score': float(score)
+    }
+    json.dump(run_diag, open(join(args.savepath, f'run_{iter}_diag.json'), 'w'), indent=2)
+    runs_summary.append(run_diag)
 
     # safe1_batch.append(torch.cat([safe1[-1].unsqueeze(0).unsqueeze(0), torch.tensor(score).unsqueeze(0).unsqueeze(0).to(safe1.device)], dim = 1))
     # safe2_batch.append(torch.cat([safe2[-1].unsqueeze(0).unsqueeze(0), torch.tensor(score).unsqueeze(0).unsqueeze(0).to(safe2.device)], dim = 1))
@@ -293,6 +361,14 @@ print("score mean: ", np.mean(score_batch))
 print("score std: ", np.std(score_batch))
 print("computation time: ", np.mean(comp_time))
 print("success rate: ", success)
+
+# save aggregate runs summary
+try:
+    makedirs(args.savepath)
+    json.dump(runs_summary, open(join(args.savepath, 'runs_summary.json'), 'w'), indent=2)
+    print(f"Saved runs summary to {join(args.savepath, 'runs_summary.json')}")
+except Exception as e:
+    print("Warning: failed to save runs_summary.json:", e)
 
 exit()
 

@@ -1087,8 +1087,7 @@ class GaussianDiffusion(nn.Module):
         # grad_norm 代表：为了让 h 增加 1，归一化坐标需要移动多少
         scale = width[param_pos_idx] / 2
         grad_norm = grad_phys * scale
-        
-        # --- 新逻辑 Start ---        
+          
         # 计算原始修正量：危险大 -> 梯度大 -> 修正大
         raw_delta = grad_norm * alpha
         
