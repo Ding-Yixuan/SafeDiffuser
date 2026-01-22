@@ -102,6 +102,8 @@ score_batch = []
 comp_time = []
 elbo_batch = []
 success = 0
+safe_count = 0
+
 import time
 num = 30
 best_safe_margin = -1.0
@@ -188,25 +190,25 @@ for iter in range(num):   # num of testing runs
             sequence = samples.observations[0]
             diffusion_paths = diffusion_paths[0]
 
-            # 添加了10次循环的保存的逻辑
-            if iter == num - 1:
-                print("正在保存最后一次运行的可视化结果...")
+            # # 添加了10次循环的保存的逻辑
+            # if iter == num - 1:
+            #     print("正在保存最后一次运行的可视化结果...")
                 
-                # 保存规划的轨迹图
-                fullpath = join(args.savepath, f'final_plan_{iter}.png')
-                renderer.composite(fullpath, samples.observations, ncol=1)
+            #     # 保存规划的轨迹图
+            #     fullpath = join(args.savepath, f'final_plan_{iter}.png')
+            #     renderer.composite(fullpath, samples.observations, ncol=1)
                 
-                # 保存视频
-                diffusion_sm = diffusion_paths
-                renderer.render_diffusion(join(args.savepath, f'final_diffusion.mp4'), diffusion_sm)
+            #     # 保存视频
+            #     diffusion_sm = diffusion_paths
+            #     renderer.render_diffusion(join(args.savepath, f'final_diffusion.mp4'), diffusion_sm)
 
-                # 保存每一帧
-                diff_step = diffusion_sm.shape[0]  
-                png_dir = join(args.savepath, 'final_png_sequence')
-                makedirs(png_dir)
-                for kk in range(diff_step):
-                    imgpath = join(png_dir, f'{kk}.png')
-                    renderer.composite(imgpath, diffusion_sm[kk:kk+1], ncol=1)
+            #     # 保存每一帧
+            #     diff_step = diffusion_sm.shape[0]  
+            #     png_dir = join(args.savepath, 'final_png_sequence')
+            #     makedirs(png_dir)
+            #     for kk in range(diff_step):
+            #         imgpath = join(png_dir, f'{kk}.png')
+            #         renderer.composite(imgpath, diffusion_sm[kk:kk+1], ncol=1)
 
         if t < len(sequence) - 1:
             next_waypoint = sequence[t+1]
@@ -312,7 +314,7 @@ for iter in range(num):   # num of testing runs
     # 逻辑：必须成功，且 (当前的最小距离 > 历史最好的最小距离)
     if is_success:
         if min_dist_overall > best_safe_margin:
-            print(f"🌟 发现更安全的成功路径！Run {iter}: MinDist 从 {best_safe_margin:.4f}m 提升到 {min_dist_overall:.4f}m (Score: {score:.4f})")
+            print(f"发现更安全的成功路径！Run {iter}: MinDist 从 {best_safe_margin:.4f}m 提升到 {min_dist_overall:.4f}m (Score: {score:.4f})")
             best_safe_margin = min_dist_overall
             
             # 保存结果
@@ -327,10 +329,11 @@ for iter in range(num):   # num of testing runs
 
     print(f"Iter {iter}: Score = {score}, Success = {is_success}, MinDist = {min_dist_overall:.4f}")
 
-    # 3. 统计计数 (修复了之前的重复计数问题)
+    # 3. 统计计数
     if is_success:
         success = success + 1
-    
+    if not collided_flag:
+        safe_count = safe_count + 1
     score_batch.append(score)
 
     # 打印本轮详细状态
@@ -364,6 +367,7 @@ print("score mean: ", np.mean(score_batch))
 print("score std: ", np.std(score_batch))
 print("computation time: ", np.mean(comp_time))
 print("success rate: ", success)
+print("safe rate: ", safe_count)
 if best_safe_margin > 0:
     print(f"Best Safe Margin (in successful runs): {best_safe_margin:.4f}m")
 else:

@@ -1,266 +1,159 @@
-import os
-import sys
-current_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(current_dir)
-sys.path.insert(0, root_dir)
-import json
 import numpy as np
-from os.path import join
-import pdb
-import os
-import time
-
-from diffuser.guides.policies import Policy
-import diffuser.datasets as datasets
+import matplotlib.pyplot as plt
 import diffuser.utils as utils
-import torch
-from diffuser.models.cbf_adapter import NeuralBarrierAdapter
+import os
 
+# ================= 配置区域 =================
+# 1. 障碍物中心坐标 (根据 ASCII 地图估算)
+# 注意：你需要看图确认这个红叉是不是正好在“墙”的位置（也就是轨迹空白处）
+OBSTACLE_CENTER = np.array([1.5, 5.0]) 
+
+# 2. 关注半径 (Region of Interest)
+# 只保留距离障碍物中心这么远以内的数据
+ROI_RADIUS = 2.0 
+
+# 3. 输出文件名
+OUTPUT_FILE = "ttc_training_data_walls.npy"
+# ===========================================
+
+# 1. 加载数据集
 class Parser(utils.Parser):
-    dataset: str = 'maze2d-umaze-v1'
+    dataset: str = 'maze2d-large-v1'
     config: str = 'config.maze2d'
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+args = Parser().parse_args('diffusion')
 
-#---------------------------------- setup ----------------------------------#
+# 确保路径存在
+if not os.path.exists(args.savepath):
+    os.makedirs(args.savepath)
 
-args = Parser().parse_args('plan')
+dataset_config = utils.Config(
+    args.loader,
+    savepath=(args.savepath, 'dataset_config.pkl'),
+    env=args.dataset,
+    horizon=args.horizon,
+    normalizer=args.normalizer,
+    preprocess_fns=args.preprocess_fns,
+    use_padding=args.use_padding,
+    max_path_length=args.max_path_length,
+)
 
-env = datasets.load_environment(args.dataset)
+print(f"正在加载数据集 {args.dataset} ...")
+dataset = dataset_config()
+all_obs = dataset.fields['observations'] # (N_episodes, T, 4)
+all_terminals = dataset.fields['terminals']
+all_timeouts = dataset.fields['timeouts']
 
-#---------------------------------- loading ----------------------------------#
+# 辅助函数：获取有效长度
+def get_valid_length(episode_idx):
+    term_idxs = np.where(all_terminals[episode_idx] > 0.5)[0]
+    time_idxs = np.where(all_timeouts[episode_idx] > 0.5)[0]
+    if len(term_idxs) > 0: return term_idxs[0] + 1
+    elif len(time_idxs) > 0: return time_idxs[0] + 1
+    obs = all_obs[episode_idx]
+    non_zero_idxs = np.nonzero(np.sum(np.abs(obs), axis=1))[0]
+    if len(non_zero_idxs) > 0: return non_zero_idxs[-1] + 1
+    return 0
 
-diffusion_experiment = utils.load_diffusion(args.logbase, args.dataset, args.diffusion_loadpath, epoch=args.diffusion_epoch)
+# -----------------------------------------------------------------------------#
+# 2. 核心逻辑：筛选与转换
+# -----------------------------------------------------------------------------#
+print(f"正在筛选距离 {OBSTACLE_CENTER} 半径 {ROI_RADIUS} 内的数据...")
 
-diffusion = diffusion_experiment.ema
-dataset = diffusion_experiment.dataset
-renderer = diffusion_experiment.renderer
+processed_data = [] # 用于存放 [rel_x, rel_y, vx, vy]
+vis_segments = []   # 用于画图验证 (原始坐标)
 
-## enable CBF
-USE_CBF = True
-if USE_CBF:
-    print("\n🚀 [System] 正在启动 CBF 安全护盾...")
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+total_points = 0
+selected_points = 0
+
+for i in range(all_obs.shape[0]):
+    valid_len = get_valid_length(i)
+    if valid_len < 2: continue
     
-    # 1. 初始化适配器 (保持原样，尊重 +1 偏移)
-    adapter = NeuralBarrierAdapter(model_filename='cbf_maze2d.pth', device=device)
+    # 取出整条轨迹: [x, y, vx, vy]
+    traj = all_obs[i, :valid_len, :]
+    pos = traj[:, :2] # (T, 2)
+    vel = traj[:, 2:4] # (T, 2)
     
-    # 2. 从当前物理环境提取墙壁 (用于 Adapter)
-    maze_env = env.unwrapped 
-    if hasattr(maze_env, 'maze_arr'):
-        maze_arr = maze_env.maze_arr
-        h, w = maze_arr.shape
-        real_walls = []
-        for r in range(h):
-            for c in range(w):
-                if maze_arr[r, c] == 10: 
-                    # Adapter 需要 +1.0
-                    real_walls.append([float(c) + 1.0, float(r) + 1.0])
+    # 计算距离障碍物中心的距离
+    # dist shape: (T,)
+    dist = np.linalg.norm(pos - OBSTACLE_CENTER, axis=1)
+    
+    # 生成掩码：哪些点在半径内
+    mask = dist < ROI_RADIUS
+    
+    if np.sum(mask) > 0:
+        # 1. 提取符合条件的点
+        selected_pos = pos[mask]
+        selected_vel = vel[mask]
         
-        adapter.wall_centers_tensor = torch.tensor(
-            real_walls, dtype=torch.float32, device=device
-        )
-        print(f"✅ [CBF] 已同步环境中的 {len(real_walls)} 个墙壁坐标 (Offset +1.0 retained)！")
+        # 2. 坐标变换：绝对坐标 -> 相对坐标
+        # relative_pos = [px - ox, py - oy]
+        relative_pos = selected_pos - OBSTACLE_CENTER
         
-        diffusion.neural_cbf = adapter
-        print("🛡️ [CBF] 避障模块已挂载，物理路测准备就绪！\n")
-    else:
-        print("⚠️ [CBF] 警告：无法从环境获取 maze_arr，避障可能失效！")
+        # 3. 拼接数据 [rel_x, rel_y, vx, vy]
+        # 注意：速度不需要减去障碍物速度（障碍物是静止的），所以保持绝对速度即可
+        # 除非你想让速度也变成相对于障碍物的方向（通常不需要，笛卡尔坐标系够用了）
+        segment_data = np.concatenate([relative_pos, selected_vel], axis=1)
+        
+        processed_data.append(segment_data)
+        vis_segments.append(selected_pos) # 存原始坐标用于画图
+        
+        selected_points += np.sum(mask)
+    
+    total_points += valid_len
+
+# 拼接所有片段成一个大数组
+if len(processed_data) > 0:
+    final_dataset = np.concatenate(processed_data, axis=0)
+    print(f"\n筛选完成！")
+    print(f"原始总点数: {total_points}")
+    print(f"选中点数:   {selected_points} (占比 {selected_points/total_points*100:.2f}%)")
+    print(f"最终数据集形状: {final_dataset.shape}")
+    
+    # 保存数据
+    np.save(OUTPUT_FILE, final_dataset)
+    print(f"数据已保存至: {OUTPUT_FILE}")
 else:
-    if hasattr(diffusion, 'neural_cbf'):
-        del diffusion.neural_cbf
-    print("\n💀 [System] CBF 避障已关闭 (Baseline 模式)\n")
+    print("错误：没有筛选到任何数据！请检查 OBSTACLE_CENTER 坐标是否正确。")
+    exit()
 
-# ==========================================================
+# -----------------------------------------------------------------------------#
+# 3. 可视化验证 (这一步非常重要)
+# -----------------------------------------------------------------------------#
+print("\n正在生成验证图片 check_roi.png ...")
+plt.figure(figsize=(10, 10))
 
-policy = Policy(diffusion, dataset.normalizer)
+# 画背景轨迹 (灰色) - 只画前200条避免太乱
+for i in range(min(all_obs.shape[0], 200)):
+    valid_len = get_valid_length(i)
+    if valid_len < 2: continue
+    plt.plot(all_obs[i, :valid_len, 0], all_obs[i, :valid_len, 1], 
+             color='lightgray', alpha=0.3, zorder=0)
 
-def makedirs(dirname):
-    if not os.path.exists(dirname):
-        os.makedirs(dirname)
-
-#---------------------------------- main loop ----------------------------------#
-safe1_batch, safe2_batch = [], []
-score_batch = []
-comp_time = []
-elbo_batch = []
-success = 0
-num = 10
-runs_summary = []
-
-# ==========================================
-# 准备碰撞检测用的墙壁 (Referees)
-# ==========================================
-print("正在构建碰撞检测用的物理墙壁坐标 (Referees)...")
-referee_walls = []
-
-maze_env = env.unwrapped
-if hasattr(maze_env, 'maze_arr'):
-    hmap = maze_env.maze_arr
-    hh, ww = hmap.shape
-    for rr in range(hh):
-        for cc in range(ww):
-            if hmap[rr, cc] == 10: 
-                # 🔥🔥🔥 终极修正：Row是X，Col是Y，且不加偏移 🔥🔥🔥
-                # observation[0] = Row (rr)
-                # observation[1] = Col (cc)
-                
-                phys_x = float(rr)
-                phys_y = float(cc)
-                
-                referee_walls.append([phys_x, phys_y]) 
+# 画选中的片段 (蓝色点) - 降采样一下，不然点太多
+vis_concat = np.concatenate(vis_segments, axis=0)
+# 只画前 5000 个点用于示意
+if len(vis_concat) > 5000:
+    indices = np.random.choice(len(vis_concat), 5000, replace=False)
+    vis_subset = vis_concat[indices]
 else:
-    # 备用方案：如果必须从 Adapter 拿
-    if USE_CBF and hasattr(diffusion, 'neural_cbf'):
-        print("⚠️ 警告：正在从 Adapter 转换坐标 (Swap XY)...")
-        adapter_walls = diffusion.neural_cbf.wall_centers_tensor.detach().cpu().numpy()
-        # Adapter 存的是 [col+1, row+1]。我们需要 [row, col]
-        # 所以先减 1，再交换列
-        # Adapter: [x_adapt, y_adapt] = [c+1, r+1]
-        # Target:  [x_phys, y_phys]   = [r, c]
-        # So: x_phys = y_adapt - 1.0
-        #     y_phys = x_adapt - 1.0
-        referee_walls = adapter_walls[:, [1, 0]] - 1.0
+    vis_subset = vis_concat
 
-walls_np = np.array(referee_walls, dtype=np.float32)
-print(f"🛑 [监控开启] 已加载 {len(walls_np)} 个物理墙壁坐标 (已校准: Row->X, Col->Y)")
+plt.scatter(vis_subset[:, 0], vis_subset[:, 1], s=5, c='blue', alpha=0.5, label='Selected Data')
 
-# ==========================================
-# 主循环开始
-# ==========================================
-for iter in range(num):
-    print(f"step: {iter}/{num}")
+# 画障碍物中心 (红色大叉)
+plt.scatter(OBSTACLE_CENTER[0], OBSTACLE_CENTER[1], s=300, c='red', marker='x', linewidth=3, label='Obstacle Center', zorder=5)
 
-    observation = env.reset()
-    observation = np.array([0.94875744, 8.93648809, -0.01347715, 0.06358764]) 
-    env.set_state(observation[0:2], observation[2:4])
+# 画关注区域圆圈
+circle = plt.Circle(OBSTACLE_CENTER, ROI_RADIUS, color='red', fill=False, linestyle='--', label='ROI Radius')
+plt.gca().add_patch(circle)
 
-    if args.conditional:
-        env.set_target()
-    
-    target = env._target
-    print(f"目标点 (Target) 坐标: {target}")
-    
-    cond = {
-        diffusion.horizon - 1: np.array([*target, 0, 0]),
-    }
-
-    rollout = [observation.copy()]
-    total_reward = 0
-    
-    per_step_collisions = [] 
-    per_step_min_d = []
-    collided_flag = False
-    min_dist_overall = float('inf')
-    
-    COLLISION_RADIUS = 0.60 
-
-    for t in range(env.max_episode_steps):
-        state = env.state_vector().copy()
-
-        if t == 0:
-            cond[0] = observation
-            start = time.time()
-            action, samples, diffusion_paths, _, _, elbo = policy(cond, batch_size=args.batch_size)
-            end = time.time()
-            comp_time.append(end-start)
-            elbo_batch.append(elbo)
-            
-            actions = samples.actions[0]
-            sequence = samples.observations[0]
-            diffusion_paths = diffusion_paths[0]
-
-            if iter == num - 1:
-                print("正在保存最后一次运行的可视化结果...")
-                fullpath = join(args.savepath, f'final_plan_{iter}.png')
-                renderer.composite(fullpath, samples.observations, ncol=1)
-                diffusion_sm = diffusion_paths
-                renderer.render_diffusion(join(args.savepath, f'final_diffusion.mp4'), diffusion_sm)
-                diff_step = diffusion_sm.shape[0]  
-                png_dir = join(args.savepath, 'final_png_sequence')
-                makedirs(png_dir)
-
-        if t < len(sequence) - 1:
-            next_waypoint = sequence[t+1]
-        else:
-            next_waypoint = sequence[-1].copy()
-            next_waypoint[2:] = 0
-            
-        action = next_waypoint[:2] - state[:2] + (next_waypoint[2:] - state[2:])
-        next_observation, reward, terminal, _ = env.step(action)
-        total_reward += reward
-        
-        # --- 碰撞检测 ---
-        pos_xy = next_observation[:2].copy()
-        
-        if len(walls_np) > 0:
-            # ✅ 使用修复后的变量名 walls_np
-            dists = np.linalg.norm(walls_np - pos_xy, axis=1)
-            min_d = float(np.min(dists))
-        else:
-            min_d = float('inf')
-
-        per_step_min_d.append(min_d)
-        
-        if min_d < COLLISION_RADIUS:
-            per_step_collisions.append(True)
-            collided_flag = True
-        else:
-            per_step_collisions.append(False)
-
-        if min_d < min_dist_overall:
-            min_dist_overall = min_d
-
-        rollout.append(next_observation.copy())
-        if terminal:
-            break
-
-        observation = next_observation
-
-    # 结算
-    is_success = False
-    if reward > 0.95:
-        success = success + 1
-        is_success = True
-    
-    score = env.get_normalized_score(total_reward)
-    score_batch.append(score)
-
-    status_icon = "✅" if (is_success and not collided_flag) else "❌"
-    print(f"{status_icon} [Round {iter+1}/{num}] "
-          f"Goal: {is_success} | "
-          f"Safe: {'✅' if not collided_flag else '💥'} | "
-          f"MinDist: {min_dist_overall:.3f}m | "
-          f"Score: {score:.4f}")
-
-    makedirs(args.savepath)
-    run_diag = {
-        'run': int(iter),
-        'reached_goal': bool(is_success),
-        'collided': bool(collided_flag),
-        'min_distance_overall': float(min_dist_overall) if min_dist_overall != float('inf') else None,
-        'score': float(score)
-    }
-    runs_summary.append(run_diag)
-
-# 最终统计
-elbo_batch = np.array(elbo_batch)
-score_batch = np.array(score_batch)
-comp_time = np.array(comp_time)
-
-print("-" * 30)
-print(f"Mode: {'SafeDiffuser (CBF On)' if USE_CBF else 'Baseline (CBF Off)'}")
-print(f"Success Rate: {success}/{num}")
-print(f"Average Score: {np.mean(score_batch):.4f}")
-print("-" * 30)
-
-try:
-    makedirs(args.savepath)
-    json.dump(runs_summary, open(join(args.savepath, 'runs_summary.json'), 'w'), indent=2)
-except Exception as e:
-    pass
-
-json_path = join(args.savepath, 'rollout.json')
-json_data = {'score': score, 'step': t, 'return': total_reward, 'term': terminal,
-    'epoch_diffusion': diffusion_experiment.epoch}
-json.dump(json_data, open(json_path, 'w'), indent=2, sort_keys=True)
+plt.title(f'TTC Data Selection Verification\nCenter:{OBSTACLE_CENTER}, Radius:{ROI_RADIUS}')
+plt.xlabel('X (Absolute)')
+plt.ylabel('Y (Absolute)')
+plt.legend()
+plt.axis('equal')
+plt.grid(True)
+plt.savefig("check_roi.png", dpi=100)
+print("验证图片已保存。请查看 check_roi.png 确认红叉是否在墙壁位置！")

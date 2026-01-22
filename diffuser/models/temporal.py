@@ -275,7 +275,7 @@ class TemporalValue(nn.Module):
 #             x : [ batch x horizon x transition ]
 #         '''
 #         t = self.time_mlp(time)
-#         # cond = self.cond_mlp(cond)
+#         # = self.cond_mlp(cond)
 #         cond = None
 
 #         h = []
