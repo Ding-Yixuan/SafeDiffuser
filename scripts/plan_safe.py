@@ -44,42 +44,23 @@ renderer = diffusion_experiment.renderer
 ## enable CBF
 USE_CBF = True
 if USE_CBF:
-    print("\n启动 CBF")
+    print("\n启动 CBF (Neural Barrier)")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # 1. 初始化适配器
-    adapter = NeuralBarrierAdapter(model_filename='cbf_maze2d.pth', device=device)
+    # [修改点 1] 初始化时不传文件名，让 Adapter 自己处理
+    adapter = NeuralBarrierAdapter(device=device)
     
-    # 2. 从当前物理环境提取墙壁 
-    maze_env = env.unwrapped 
-    if hasattr(maze_env, 'maze_arr'):
-        maze_arr = maze_env.maze_arr
-        h, w = maze_arr.shape
-        real_walls = []
-        
-        # 解析墙壁坐标
-        for r in range(h):
-            for c in range(w):
-                if maze_arr[r, c] == 10: # 10 代表墙
-                    # 坐标变换：(col + 1.0, row + 1.0)
-                    real_walls.append([float(c) + 1.0, float(r) + 1.0])
-        
-        # 3. 注入墙壁数据到 CBF
-        adapter.wall_centers_tensor = torch.tensor(
-            real_walls, dtype=torch.float32, device=device
-        )
-        print(f"同步环境中的 {len(real_walls)} 个墙壁坐标")
-        
-        # 4. 挂载到 Diffusion 模型上
-        diffusion.neural_cbf = adapter
-        print("CBF已挂载\n")
-    else:
-        print("无法从环境获取 maze_arr")
+    # [修改点 2] 这是一个"单目标"测试，不需要注入全图墙壁
+    # 我们直接把 Adapter 挂载上去即可
+    diffusion.neural_cbf = adapter
+    print(f"CBF已挂载 (Target Center: {adapter.center.cpu().numpy()})\n")
+
 else:
     # 确保清空，防止意外残留
     if hasattr(diffusion, 'neural_cbf'):
         del diffusion.neural_cbf
     print("\nCBF关闭\n")
+
 # ==========================================================
 
 policy = Policy(diffusion, dataset.normalizer)
@@ -113,30 +94,21 @@ runs_summary = []
 # ==============================================================================
 # 2. 碰撞检测
 # ==============================================================================
-print("正在构建碰撞检测用的物理墙壁坐标")
-referee_walls = []
+print("正在配置目标障碍物碰撞检测...")
 
-maze_env = env.unwrapped
-if hasattr(maze_env, 'maze_arr'):
-    hmap = maze_env.maze_arr
-    hh, ww = hmap.shape
-    for rr in range(hh):
-        for cc in range(ww):
-            if hmap[rr, cc] == 10: 
-                # Observation X = Map Row, Observation Y = Map Col
-                phys_x = float(rr)
-                phys_y = float(cc)
-                referee_walls.append([phys_x, phys_y]) 
-else:
+# 我们关注的障碍物中心和尺寸 (与训练时一致)
+TARGET_CENTER = np.array([1.5, 5.0])
+HALF_EXTENTS = np.array([1.0, 0.5])  # 宽2米, 高1米的横向墙壁
 
-    if USE_CBF and hasattr(diffusion, 'neural_cbf'):
-        print("正在从 Adapter 转换坐标 (Swap XY)...")
-        adapter_walls = diffusion.neural_cbf.wall_centers_tensor.detach().cpu().numpy()
-        # Adapter: [c+1, r+1] -> 减1 -> [c, r] -> 交换 -> [r, c]
-        referee_walls = adapter_walls[:, [1, 0]] - 1.0
-
-walls_np = np.array(referee_walls, dtype=np.float32)
-print(f"{len(walls_np)} 个物理墙壁坐标 (Row->X, Col->Y)")
+def get_target_box_distance(pos):
+    """计算机器人到目标矩形表面的最短距离"""
+    rel_pos = pos - TARGET_CENTER
+    d = np.abs(rel_pos) - HALF_EXTENTS
+    # 外部距离
+    outside_dist = np.linalg.norm(np.maximum(d, 0))
+    # 内部距离 (撞进去了就是负数)
+    inside_dist = np.minimum(np.max(d), 0)
+    return outside_dist + inside_dist
 
 
 
@@ -144,7 +116,7 @@ for iter in range(num):   # num of testing runs
     print("step: ", iter, "/100")
 
     observation = env.reset()    #array([ 0.94875744,  8.93648809, -0.01347715,  0.06358764])
-    observation = np.array([0.94875744,  8.93648809, -0.01347715,  0.06358764])   # fix the initial position and final destination for comparison (not needed for general testing)
+    observation = np.array([0.94875744,  1, -0.01347715,  0.06358764])   # fix the initial position and final destination for comparison (not needed for general testing)
     env.set_state(observation[0:2], observation[2:4]) ############################################################ same as the last line
 
     if args.conditional:
@@ -152,8 +124,8 @@ for iter in range(num):   # num of testing runs
         env.set_target()
 
     ## set conditioning xy position to be the goal
-    target = env._target
-    # target = np.array([7.0, 1.0])
+    # target = env._target
+    target = np.array([1.0, 10.0])
     print(f"目标点 (Target) 坐标: {target}")
     cond = {
         diffusion.horizon - 1: np.array([*target, 0, 0]),
@@ -225,15 +197,14 @@ for iter in range(num):   # num of testing runs
         # 碰撞检测
         pos_xy = next_observation[:2].copy() # 机器人的真实物理坐标
         
-        if len(walls_np) > 0:
-            # 计算距离：使用校准后的 referee walls (walls_np)
-            dists = np.linalg.norm(walls_np - pos_xy, axis=1)
-            min_d = float(np.min(dists))
-        else:
-            min_d = float('inf')
+        min_d = get_target_box_distance(pos_xy)
 
         per_step_min_d.append(min_d)
         
+        # 判定是否发生碰撞
+        # 注意：机器人的物理半径大约是 0.15m。
+        # 如果距离墙壁表面小于 0.15m，就认为是物理碰撞了。
+        COLLISION_RADIUS = 0.15 
         if min_d < COLLISION_RADIUS:
             per_step_collisions.append(True)
             collided_flag = True
@@ -242,7 +213,6 @@ for iter in range(num):   # num of testing runs
 
         if min_d < min_dist_overall:
             min_dist_overall = min_d
-
 
         score = env.get_normalized_score(total_reward)
         rollout.append(next_observation.copy())

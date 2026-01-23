@@ -1,159 +1,201 @@
 import numpy as np
+import torch
+import torch.nn as nn
 import matplotlib.pyplot as plt
-import diffuser.utils as utils
 import os
 
-# ================= 配置区域 =================
-# 1. 障碍物中心坐标 (根据 ASCII 地图估算)
-# 注意：你需要看图确认这个红叉是不是正好在“墙”的位置（也就是轨迹空白处）
-OBSTACLE_CENTER = np.array([1.5, 5.0]) 
+# ==========================================
+# 1. 你的高阶绘图函数 (原封不动)
+# ==========================================
+def plot_barrier_boundary_2d(
+    model,
+    domain,          # e.g. [(xmin, xmax), (ymin, ymax)]
+    plot_len=(300, 300),  # (nx, ny)
+    width=0.1,       # WIDTH
+    norm_eps=1e-6,   # NORM_EPS
+    ax=None,
+    device=None,
+):
+    """
+    绘制 barrier NN 的边界线（兼容旧版 PyTorch）
+    """
+    if ax is None:
+        ax = plt.gca()
 
-# 2. 关注半径 (Region of Interest)
-# 只保留距离障碍物中心这么远以内的数据
-ROI_RADIUS = 2.0 
+    if device is None:
+        device = next(model.parameters()).device
 
-# 3. 输出文件名
-OUTPUT_FILE = "ttc_training_data_walls.npy"
-# ===========================================
+    nx, ny = int(plot_len[0]), int(plot_len[1])
+    (xmin, xmax), (ymin, ymax) = domain
 
-# 1. 加载数据集
-class Parser(utils.Parser):
-    dataset: str = 'maze2d-large-v1'
-    config: str = 'config.maze2d'
-
-args = Parser().parse_args('diffusion')
-
-# 确保路径存在
-if not os.path.exists(args.savepath):
-    os.makedirs(args.savepath)
-
-dataset_config = utils.Config(
-    args.loader,
-    savepath=(args.savepath, 'dataset_config.pkl'),
-    env=args.dataset,
-    horizon=args.horizon,
-    normalizer=args.normalizer,
-    preprocess_fns=args.preprocess_fns,
-    use_padding=args.use_padding,
-    max_path_length=args.max_path_length,
-)
-
-print(f"正在加载数据集 {args.dataset} ...")
-dataset = dataset_config()
-all_obs = dataset.fields['observations'] # (N_episodes, T, 4)
-all_terminals = dataset.fields['terminals']
-all_timeouts = dataset.fields['timeouts']
-
-# 辅助函数：获取有效长度
-def get_valid_length(episode_idx):
-    term_idxs = np.where(all_terminals[episode_idx] > 0.5)[0]
-    time_idxs = np.where(all_timeouts[episode_idx] > 0.5)[0]
-    if len(term_idxs) > 0: return term_idxs[0] + 1
-    elif len(time_idxs) > 0: return time_idxs[0] + 1
-    obs = all_obs[episode_idx]
-    non_zero_idxs = np.nonzero(np.sum(np.abs(obs), axis=1))[0]
-    if len(non_zero_idxs) > 0: return non_zero_idxs[-1] + 1
-    return 0
-
-# -----------------------------------------------------------------------------#
-# 2. 核心逻辑：筛选与转换
-# -----------------------------------------------------------------------------#
-print(f"正在筛选距离 {OBSTACLE_CENTER} 半径 {ROI_RADIUS} 内的数据...")
-
-processed_data = [] # 用于存放 [rel_x, rel_y, vx, vy]
-vis_segments = []   # 用于画图验证 (原始坐标)
-
-total_points = 0
-selected_points = 0
-
-for i in range(all_obs.shape[0]):
-    valid_len = get_valid_length(i)
-    if valid_len < 2: continue
+    # --- 1) 生成网格 ---
+    xs = torch.linspace(xmin, xmax, nx, device=device)
+    ys = torch.linspace(ymin, ymax, ny, device=device)
     
-    # 取出整条轨迹: [x, y, vx, vy]
-    traj = all_obs[i, :valid_len, :]
-    pos = traj[:, :2] # (T, 2)
-    vel = traj[:, 2:4] # (T, 2)
+    # [关键修改] 兼容旧版 PyTorch 的写法
+    # 旧版 meshgrid 默认是 'ij' (Matrix) 索引
+    # 为了得到 'xy' (Cartesian) 效果，我们输入 (ys, xs)，接收 (Y, X)
+    Y, X = torch.meshgrid(ys, xs)
     
-    # 计算距离障碍物中心的距离
-    # dist shape: (T,)
-    dist = np.linalg.norm(pos - OBSTACLE_CENTER, axis=1)
+    # 此时 X, Y 的 shape 都是 [ny, nx]，我们需要 flatten 后堆叠
+    pts = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=1)  # [nx*ny, 2]
+
+    # --- 2) 前向 + 对输入求梯度 ---
+    model.eval()
+
+    prev_req = [p.requires_grad for p in model.parameters()]
+    model.requires_grad_(False)
+
+    pts.requires_grad_(True)
+    B = model(pts)
     
-    # 生成掩码：哪些点在半径内
-    mask = dist < ROI_RADIUS
+    if B.dim() > 1 and B.shape[1] != 1:
+        B = B[:, :1]
+    B = B.reshape(-1, 1)
+
+    grad = torch.autograd.grad(
+        outputs=B.sum(),
+        inputs=pts,
+        create_graph=False,
+        retain_graph=False,
+        allow_unused=False
+    )[0]  # [N,2]
+
+    pts.requires_grad_(False)
+
+    grad_norm = torch.clamp(torch.linalg.vector_norm(grad, dim=1), min=norm_eps)  # [N]
+    normed_B = (B.squeeze(1) / grad_norm)  # [N]
+
+    # --- 3) reshape 回网格并画 contour ---
+    # 注意：这里的 shape 要和 meshgrid 生成的一致 [ny, nx]
+    Z = normed_B.detach().cpu().numpy().reshape(ny, nx)
+
+    x_np = xs.detach().cpu().numpy()
+    y_np = ys.detach().cpu().numpy()
     
-    if np.sum(mask) > 0:
-        # 1. 提取符合条件的点
-        selected_pos = pos[mask]
-        selected_vel = vel[mask]
+    # Numpy 的 meshgrid 默认就是 'xy'，这里不需要改
+    X_np, Y_np = np.meshgrid(x_np, y_np) 
+    
+    # 此时 X_np shape 是 [ny, nx]，Z 也是 [ny, nx]，直接画即可，不需要转置了
+    
+    contour = ax.contour(
+        X_np, Y_np, Z,
+        levels=[-width, 0.0, width],
+        linestyles=["dotted", "solid", "dotted"],
+        linewidths=[1.5, 2.5, 1.5],
+        colors=["red", "blue", "green"]
+    )
+    ax.clabel(contour, inline=True, fontsize=10, fmt={-width:'Dangerous', 0.0:'Boundary', width:'Safe'})
+
+    for p, r in zip(model.parameters(), prev_req):
+        p.requires_grad_(r)
+
+    return contour
+
+# ==========================================
+# 2. 模型定义与包装器
+# ==========================================
+class SafetyNetwork(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(4, 128), 
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1) 
+        )
+    def forward(self, x):
+        return self.net(x)
+
+# [关键] 这是一个包装器，把 2D 坐标变成 4D 输入 (注入速度)
+class VelocityWrapper(nn.Module):
+    def __init__(self, base_model, velocity):
+        super().__init__()
+        self.base_model = base_model
+        # velocity: tensor [vx, vy]
+        self.register_buffer('velocity', velocity) 
+
+    def forward(self, pts_2d):
+        # pts_2d: [N, 2] -> (x, y)
+        # 我们需要拼接 velocity 变成 [N, 4] -> (x, y, vx, vy)
         
-        # 2. 坐标变换：绝对坐标 -> 相对坐标
-        # relative_pos = [px - ox, py - oy]
-        relative_pos = selected_pos - OBSTACLE_CENTER
+        batch_size = pts_2d.shape[0]
+        # 扩展速度到 batch 大小
+        v_expanded = self.velocity.unsqueeze(0).expand(batch_size, -1) # [N, 2]
         
-        # 3. 拼接数据 [rel_x, rel_y, vx, vy]
-        # 注意：速度不需要减去障碍物速度（障碍物是静止的），所以保持绝对速度即可
-        # 除非你想让速度也变成相对于障碍物的方向（通常不需要，笛卡尔坐标系够用了）
-        segment_data = np.concatenate([relative_pos, selected_vel], axis=1)
+        # 拼接
+        inputs = torch.cat([pts_2d, v_expanded], dim=1)
         
-        processed_data.append(segment_data)
-        vis_segments.append(selected_pos) # 存原始坐标用于画图
-        
-        selected_points += np.sum(mask)
+        # 这里的输出就是 B(x)
+        return self.base_model(inputs)
+
+# ==========================================
+# 3. 主程序：生成精确对比图
+# ==========================================
+def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    total_points += valid_len
-
-# 拼接所有片段成一个大数组
-if len(processed_data) > 0:
-    final_dataset = np.concatenate(processed_data, axis=0)
-    print(f"\n筛选完成！")
-    print(f"原始总点数: {total_points}")
-    print(f"选中点数:   {selected_points} (占比 {selected_points/total_points*100:.2f}%)")
-    print(f"最终数据集形状: {final_dataset.shape}")
+    # 1. 加载模型
+    model = SafetyNetwork().to(device)
+    model_path = "ttc_model_dataset.pth"
     
-    # 保存数据
-    np.save(OUTPUT_FILE, final_dataset)
-    print(f"数据已保存至: {OUTPUT_FILE}")
-else:
-    print("错误：没有筛选到任何数据！请检查 OBSTACLE_CENTER 坐标是否正确。")
-    exit()
+    if os.path.exists(model_path):
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        print("模型加载成功！")
+    else:
+        print("模型文件不存在，请先训练！")
+        return
 
-# -----------------------------------------------------------------------------#
-# 3. 可视化验证 (这一步非常重要)
-# -----------------------------------------------------------------------------#
-print("\n正在生成验证图片 check_roi.png ...")
-plt.figure(figsize=(10, 10))
+    # 2. 准备画布
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    
+    # 定义绘图范围 (相对坐标系)
+    domain = [(-2.0, 2.0), (-2.0, 2.0)]
+    
+    # --- Case 1: 静态 (Velocity = 0) ---
+    print("正在绘制静态边界...")
+    v_static = torch.tensor([0.0, 0.0]).to(device)
+    wrapper_static = VelocityWrapper(model, v_static)
+    
+    ax0 = axes[0]
+    plot_barrier_boundary_2d(wrapper_static, domain, ax=ax0, width=0.1)
+    
+    # 画真实的墙壁框 (Yellow)
+    # 横向长方形: 宽2 (半宽1), 高1 (半高0.5)
+    rect = plt.Rectangle((-1.0, -0.5), 2.0, 1.0, 
+                         fill=False, color='orange', linewidth=2, label='Real Wall')
+    ax0.add_patch(rect)
+    ax0.set_title("Static Safety Boundary (v=0)")
+    ax0.set_aspect('equal')
+    ax0.grid(True, alpha=0.3)
+    ax0.legend()
 
-# 画背景轨迹 (灰色) - 只画前200条避免太乱
-for i in range(min(all_obs.shape[0], 200)):
-    valid_len = get_valid_length(i)
-    if valid_len < 2: continue
-    plt.plot(all_obs[i, :valid_len, 0], all_obs[i, :valid_len, 1], 
-             color='lightgray', alpha=0.3, zorder=0)
+    # --- Case 2: 动态 (Velocity = [2, 2]) ---
+    print("正在绘制动态边界...")
+    v_dynamic = torch.tensor([0.8, 0.8]).to(device)
+    wrapper_dynamic = VelocityWrapper(model, v_dynamic)
+    
+    ax1 = axes[1]
+    plot_barrier_boundary_2d(wrapper_dynamic, domain, ax=ax1, width=0.1)
+    
 
-# 画选中的片段 (蓝色点) - 降采样一下，不然点太多
-vis_concat = np.concatenate(vis_segments, axis=0)
-# 只画前 5000 个点用于示意
-if len(vis_concat) > 5000:
-    indices = np.random.choice(len(vis_concat), 5000, replace=False)
-    vis_subset = vis_concat[indices]
-else:
-    vis_subset = vis_concat
 
-plt.scatter(vis_subset[:, 0], vis_subset[:, 1], s=5, c='blue', alpha=0.5, label='Selected Data')
+    rect1 = plt.Rectangle((-1.0, -0.5), 2.0, 1.0, 
+                         fill=False, color='orange', linewidth=2, label='Real Wall')
+    ax1.add_patch(rect1)
+    
+    # 画速度箭头
+    ax1.arrow(0, 0, 0.5, 0.5, head_width=0.1, color='black', label='Velocity')
+    ax1.set_title("Dynamic Safety Boundary (v=[0.8, 0.8])")
+    ax1.set_aspect('equal')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
 
-# 画障碍物中心 (红色大叉)
-plt.scatter(OBSTACLE_CENTER[0], OBSTACLE_CENTER[1], s=300, c='red', marker='x', linewidth=3, label='Obstacle Center', zorder=5)
+    # 保存
+    save_name = "precise_boundary_vis.png"
+    plt.savefig(save_name, dpi=150)
+    print(f"高清边界图已保存为: {save_name}")
 
-# 画关注区域圆圈
-circle = plt.Circle(OBSTACLE_CENTER, ROI_RADIUS, color='red', fill=False, linestyle='--', label='ROI Radius')
-plt.gca().add_patch(circle)
-
-plt.title(f'TTC Data Selection Verification\nCenter:{OBSTACLE_CENTER}, Radius:{ROI_RADIUS}')
-plt.xlabel('X (Absolute)')
-plt.ylabel('Y (Absolute)')
-plt.legend()
-plt.axis('equal')
-plt.grid(True)
-plt.savefig("check_roi.png", dpi=100)
-print("验证图片已保存。请查看 check_roi.png 确认红叉是否在墙壁位置！")
+if __name__ == "__main__":
+    main()

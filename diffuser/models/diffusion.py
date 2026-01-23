@@ -1214,7 +1214,7 @@ class GaussianDiffusion(nn.Module):
         # Note:  choose any one of the below
         #---------------------------------------start--------------------------------------------------#
         ####################### original diffuser only
-        # x = xp1      
+        x = xp1      
         # xr = 2*1/(self.norm_maxs[1] - self.norm_mins[1])
         # yr = 2*1/(self.norm_maxs[0] - self.norm_mins[0])
         # off_x = 2*(5.8-0.5 - self.norm_mins[1])/(self.norm_maxs[1] - self.norm_mins[1]) - 1
@@ -1237,7 +1237,7 @@ class GaussianDiffusion(nn.Module):
         # x = self.invariance(x, xp1)    # RoS
         # x = self.invariance_cf(x, xp1)  # RoS closed form
 
-        x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
+        # x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
 
         # x = self.invariance_relax(x, xp1, t) # ReS
         # x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    

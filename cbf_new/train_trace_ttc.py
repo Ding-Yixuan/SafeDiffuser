@@ -11,9 +11,9 @@ import os
 # ================= 配置区域 =================
 # 1. 障碍物参数
 OBSTACLE_CENTER = np.array([1.5, 5.0])  # 修正后的中心
-WALL_RADIUS = 0.5                       # 墙的物理半径 (大概半个格子)
+# 半宽=1.0 (总宽2.0), 半高=0.5 (总高1.0)
+HALF_EXTENTS = np.array([1.0, 0.5])
 SAFETY_BUFFER = 0.15                     # 安全余量
-SAFE_THRESHOLD = WALL_RADIUS + SAFETY_BUFFER # 0.65m
 
 # 2. 训练参数
 ROI_RADIUS = 3.0       # 筛选数据的范围 (只看墙周围3米的数据)
@@ -58,6 +58,19 @@ def get_valid_length(episode_idx):
     if len(non_zero_idxs) > 0: return non_zero_idxs[-1] + 1
     return 0
 
+# 计算矩形距离 (SDF)
+def get_box_distance(rel_pos, half_size):
+    """
+    计算点到矩形表面的距离
+    返回 > 0 表示在外部，< 0 表示在内部
+    """
+    d = np.abs(rel_pos) - half_size
+    # 外部距离 (向量长度)
+    outside_dist = np.linalg.norm(np.maximum(d, 0), axis=1)
+    # 内部距离 (最近边距离，负数)
+    inside_dist = np.minimum(np.max(d, axis=1), 0)
+    return outside_dist + inside_dist
+
 print(f"正在筛选 ROI ({ROI_RADIUS}m) 内的数据...")
 training_data = []
 training_labels = []
@@ -82,16 +95,19 @@ for i in range(all_obs.shape[0]):
     sel_vel = vel[mask]
     sel_dist_now = dist_now[mask]
     
-    # 3. [关键] 生成动态标签 (让 v 发挥作用)
-    # 预测未来位置: p_future = p_now + v * t
-    future_rel_pos = sel_rel_pos + sel_vel * TTC_LOOKAHEAD
-    dist_future = np.linalg.norm(future_rel_pos, axis=1)
+    # 3. 使用矩形距离生成标签
+    dist_now_box = get_box_distance(sel_rel_pos, HALF_EXTENTS)
     
-    # 标签逻辑: 取当前和未来最危险的那一刻
-    # Label = min(dist_now, dist_future) - SAFE_THRESHOLD
-    # 结果 < 0 表示危险 (Unsafe), > 0 表示安全 (Safe)
-    min_dist = np.minimum(sel_dist_now, dist_future)
-    labels = min_dist - SAFE_THRESHOLD
+    # 预测未来位置
+    future_rel_pos = sel_rel_pos + sel_vel * TTC_LOOKAHEAD
+    # 计算未来时刻到矩形表面的距离
+    dist_future_box = get_box_distance(future_rel_pos, HALF_EXTENTS)
+    
+    # 标签逻辑: 取最危险时刻的表面距离，再减去安全余量
+    # Label = Dist_Surface - Buffer
+    # 结果 < 0 表示危险 (侵入 Buffer 或撞墙)
+    min_dist = np.minimum(dist_now_box, dist_future_box)
+    labels = min_dist - SAFETY_BUFFER
     
     # 拼接输入: [rx, ry, vx, vy]
     inputs = np.concatenate([sel_rel_pos, sel_vel], axis=1)
@@ -172,7 +188,6 @@ print("模型已保存为 ttc_model_dataset.pth")
 print("正在生成验证图...")
 model.eval()
 with torch.no_grad():
-    # 生成网格位置, 假设速度为 0 (静态安全场)
     x = np.linspace(-2, 2, 100)
     y = np.linspace(-2, 2, 100)
     xx, yy = np.meshgrid(x, y)
@@ -181,8 +196,7 @@ with torch.no_grad():
     in_static = np.stack([xx.ravel(), yy.ravel(), np.zeros_like(xx.ravel()), np.zeros_like(xx.ravel())], axis=1)
     out_static = model(torch.FloatTensor(in_static).to(device)).cpu().numpy().reshape(xx.shape)
     
-    # Case 2: 速度冲向右上方 (vx=2, vy=2)
-    # 这时候左下角的区域应该变得更危险 (红色区域扩大)
+    # Case 2: 速度冲向右上方
     in_dynamic = np.stack([xx.ravel(), yy.ravel(), np.full_like(xx.ravel(), 2.0), np.full_like(xx.ravel(), 2.0)], axis=1)
     out_dynamic = model(torch.FloatTensor(in_dynamic).to(device)).cpu().numpy().reshape(xx.shape)
 
@@ -192,7 +206,11 @@ plt.subplot(1, 2, 1)
 plt.contourf(xx, yy, out_static, levels=20, cmap='RdBu', vmin=-1, vmax=1)
 plt.colorbar(label='Safety Score')
 plt.contour(xx, yy, out_static, levels=[0], colors='black', linewidths=2, linestyles='--')
-plt.title(f"Static Safety Field (v=0)\nCenter={OBSTACLE_CENTER}")
+# 画出真实的矩形边界供对比
+rect = plt.Rectangle((-HALF_EXTENTS[0], -HALF_EXTENTS[1]), HALF_EXTENTS[0]*2, HALF_EXTENTS[1]*2, 
+                     fill=False, color='yellow', linewidth=2, label='Wall Boundary')
+plt.gca().add_patch(rect)
+plt.title(f"Static Safety Field (v=0)\n(Should match rectangle)")
 plt.xlabel("Rel X")
 plt.ylabel("Rel Y")
 
@@ -200,9 +218,9 @@ plt.subplot(1, 2, 2)
 plt.contourf(xx, yy, out_dynamic, levels=20, cmap='RdBu', vmin=-1, vmax=1)
 plt.colorbar(label='Safety Score')
 plt.contour(xx, yy, out_dynamic, levels=[0], colors='black', linewidths=2, linestyles='--')
-plt.arrow(0, 0, 0.5, 0.5, head_width=0.1, color='yellow', label='Vel Direction') # 画个箭头示意速度
-plt.title("Dynamic Safety Field (v=[2, 2])\nNote: Danger zone should shift!")
+plt.arrow(0, 0, 0.5, 0.5, head_width=0.1, color='yellow', label='Vel Direction')
+plt.title("Dynamic Safety Field (v=[2, 2])")
 plt.xlabel("Rel X")
 
-plt.savefig("ttc_verification.png")
-print("验证图已保存为 ttc_verification.png")
+plt.savefig("ttc_verification_box.png")
+print("验证图已保存为 ttc_verification_box.png")
