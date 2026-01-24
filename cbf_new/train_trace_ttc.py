@@ -37,7 +37,7 @@ ROI_RADIUS = 4.0       # 筛选数据的范围 (只看墙周围3米的数据)
 TTC_LOOKAHEAD = 1.0    # 预测未来几秒 (让速度v发挥作用的关键!)
 BATCH_SIZE = 4096
 LR = 1e-3
-EPOCHS = 100
+EPOCHS = 300
 
 # 可选：通过环境变量快速覆盖训练参数（便于观察收敛）
 EPOCHS = int(os.environ.get("TTC_EPOCHS", EPOCHS))
