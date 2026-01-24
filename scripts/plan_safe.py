@@ -56,13 +56,9 @@ USE_CBF = True
 if USE_CBF:
     print("\n启动 CBF (Neural Barrier)")
     
-    # [修改点 1] 初始化时不传文件名，让 Adapter 自己处理
     adapter = NeuralBarrierAdapter(device=device)
-    
-    # [修改点 2] 这是一个"单目标"测试，不需要注入全图墙壁
-    # 我们直接把 Adapter 挂载上去即可
     diffusion.neural_cbf = adapter
-    print(f"CBF已挂载 (Target Center: {adapter.center.cpu().numpy()})\n")
+    print(f"CBF已挂载: {adapter.summary()}\n")
 
 else:
     # 确保清空，防止意外残留
@@ -88,89 +84,6 @@ def smooth(diffusion):
     return diffusion_copy
 
 #---------------------------------- dynamic safe boundary ----------------------------------#
-def plot_barrier_boundary_2d(
-    model,
-    domain,
-    plot_len=(300, 300),
-    width=0.1,
-    norm_eps=1e-6,
-    ax=None,
-    device=None,
-):
-    if ax is None:
-        ax = plt.gca()
-
-    if device is None:
-        device = next(model.parameters()).device
-    dtype = next(model.parameters()).dtype
-
-    nx, ny = int(plot_len[0]), int(plot_len[1])
-    (xmin, xmax), (ymin, ymax) = domain
-
-    xs = torch.linspace(xmin, xmax, nx, device=device, dtype=dtype)
-    ys = torch.linspace(ymin, ymax, ny, device=device, dtype=dtype)
-
-    Y, X = torch.meshgrid(ys, xs)
-    pts = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=1)
-
-    model.eval()
-
-    prev_req = [p.requires_grad for p in model.parameters()]
-    model.requires_grad_(False)
-
-    pts.requires_grad_(True)
-    B = model(pts)
-
-    if B.dim() > 1 and B.shape[1] != 1:
-        B = B[:, :1]
-    B = B.reshape(-1, 1)
-
-    grad = torch.autograd.grad(
-        outputs=B.sum(),
-        inputs=pts,
-        create_graph=False,
-        retain_graph=False,
-        allow_unused=False
-    )[0]
-
-    pts.requires_grad_(False)
-
-    grad_norm = torch.clamp(torch.linalg.vector_norm(grad, dim=1), min=norm_eps)
-    normed_B = (B.squeeze(1) / grad_norm)
-
-    Z = normed_B.detach().cpu().numpy().reshape(ny, nx)
-
-    x_np = xs.detach().cpu().numpy()
-    y_np = ys.detach().cpu().numpy()
-    X_np, Y_np = np.meshgrid(x_np, y_np)
-
-    min_val = float(np.min(Z))
-    max_val = float(np.max(Z))
-    levels = [-width, 0.0, width]
-    use_default_labels = True
-    if max_val - min_val < 1e-6:
-        return None
-    if min_val > levels[0] or max_val < levels[-1]:
-        levels = [min_val, 0.5 * (min_val + max_val), max_val]
-        use_default_labels = False
-
-    contour = ax.contour(
-        X_np, Y_np, Z,
-        levels=levels,
-        linestyles=["dotted", "solid", "dotted"],
-        linewidths=[1.5, 2.5, 1.5],
-        colors=["red", "blue", "green"],
-        zorder=30,
-    )
-    if use_default_labels:
-        ax.clabel(contour, inline=True, fontsize=10, fmt={-width:'Dangerous', 0.0:'Boundary', width:'Safe'})
-
-    for p, r in zip(model.parameters(), prev_req):
-        p.requires_grad_(r)
-
-    return contour
-
-
 def normalize_maze_xy(xy, env_name):
     bounds = MAZE_BOUNDS[env_name]
     xy = xy + 0.5
@@ -238,8 +151,8 @@ def plot_barrier_boundary_on_maze(
 
     Z = normed_B.detach().cpu().numpy().reshape(ny, nx)
 
-    X_world = X.detach().cpu().numpy()-0.5
-    Y_world = Y.detach().cpu().numpy()+1.5
+    X_world = X.detach().cpu().numpy()
+    Y_world = Y.detach().cpu().numpy()
     grid = np.stack([X_world.reshape(-1), Y_world.reshape(-1)], axis=1)
     grid_norm, iscale, jscale = normalize_maze_xy(grid, env_name)
     X_norm = grid_norm[:, 0].reshape(ny, nx)
@@ -276,11 +189,11 @@ class SafetyNetwork(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(4, 128),
+            nn.Linear(4, 256), 
             nn.ReLU(),
-            nn.Linear(128, 128),
+            nn.Linear(256, 256),
             nn.ReLU(),
-            nn.Linear(128, 1)
+            nn.Linear(256, 1)
         )
 
     def forward(self, x):
@@ -605,25 +518,73 @@ def parse_maze_map(map_lines):
             #     "center": np.array([(min(cols_idx)+max(cols_idx)+1)/2.0 + 1.0, (min(rows_idx)+max(rows_idx)+1)/2.0 + 1.0], dtype=np.float32),
             #     "half_extents": np.array([(max(cols_idx)-min(cols_idx)+1)/2.0, (max(rows_idx)-min(rows_idx)+1)/2.0], dtype=np.float32)
             # })
-            rows_idx = [cl[0] for cl in cells]; cols_idx = [cl[1] for cl in cells]
-            # center = [x, y] = [col, row]，不额外偏移
-            center_y = (min(cols_idx) + max(cols_idx) + 1) / 2.0
-            center_x = (min(rows_idx) + max(rows_idx) + 1) / 2.0
-            half_y = (max(cols_idx) - min(cols_idx) + 1) / 2.0
+            rows_idx = [cl[0] for cl in cells]
+            cols_idx = [cl[1] for cl in cells]
+            
+            # # 【修改】：和 adapter 里一样，X 对应 Col，Y 对应 Row
+            # center_x = (min(cols_idx) + max(cols_idx)) / 2.0
+            # center_y = (min(rows_idx) + max(rows_idx)) / 2.0
+            # half_x = (max(cols_idx) - min(cols_idx) + 1) / 2.0
+            # half_y = (max(rows_idx) - min(rows_idx) + 1) / 2.0
+            
+            # obstacles.append({
+            #     "center": np.array([center_x, center_y], dtype=np.float32),
+            #     "half_extents": np.array([half_x, half_y], dtype=np.float32)
+            # })
+            # 【核心修改】：X 对应 Row，Y 对应 Col，不加 1
+            center_x = (min(rows_idx) + max(rows_idx)) / 2.0  # X 是行
+            center_y = (min(cols_idx) + max(cols_idx)) / 2.0+2  # Y 是列
             half_x = (max(rows_idx) - min(rows_idx) + 1) / 2.0
+            half_y = (max(cols_idx) - min(cols_idx) + 1) / 2.0
+            
             obstacles.append({
-                "center": np.array([center_x-0.5, center_y+1.5], dtype=np.float32),
+                "center": np.array([center_x, center_y], dtype=np.float32),
                 "half_extents": np.array([half_x, half_y], dtype=np.float32)
             })
     return obstacles
-
+# def parse_maze_map(map_lines):
+#     rows = len(map_lines); cols = len(map_lines[0])
+#     grid = np.array([[c == '#' for c in line] for line in map_lines], dtype=bool)
+#     visited = np.zeros_like(grid, dtype=bool)
+#     obstacles = []
+    
+#     for r in range(rows):
+#         for c in range(cols):
+#             if not grid[r, c] or visited[r, c]: continue
+#             stack = [(r, c)]; visited[r, c] = True; cells = []
+#             while stack:
+#                 cr, cc = stack.pop(); cells.append((cr, cc))
+#                 for nr, nc in [(cr-1, cc), (cr+1, cc), (cr, cc-1), (cr, cc+1)]:
+#                     if 0<=nr<rows and 0<=nc<cols and grid[nr, nc] and not visited[nr, nc]:
+#                         visited[nr, nc] = True; stack.append((nr, nc))
+            
+#             rows_idx = [cl[0] for cl in cells]
+#             cols_idx = [cl[1] for cl in cells]
+            
+#             # 1. X 轴对应 列 (Col)
+#             center_x = (min(cols_idx) + max(cols_idx) + 1) / 2.0
+            
+#             # 2. 【核心修改】：Y 轴对应 行 (Row)，且必须上下翻转！
+#             raw_center_row = (min(rows_idx) + max(rows_idx) + 1) / 2.0
+#             total_rows = len(map_lines)
+#             center_y = total_rows - raw_center_row  # <--- 翻转在这里！
+            
+#             # 3. 宽高保持不变
+#             half_x = (max(cols_idx) - min(cols_idx) + 1) / 2.0
+#             half_y = (max(rows_idx) - min(rows_idx) + 1) / 2.0
+            
+#             obstacles.append({
+#                 "center": np.array([center_x, center_y], dtype=np.float32),
+#                 "half_extents": np.array([half_x, half_y], dtype=np.float32)
+#             })
+#     return obstacles
 ALL_OBSTACLES = parse_maze_map(MAZE_MAP_LARGE)
 
 # 2. 定义全图渲染范围 X:[0, 12], Y:[0, 10]
 FULL_MAZE_DOMAIN = [(0.0, 12.0), (0.0, 10.0)] 
 
 DRAW_DYNAMIC_BOUNDARY = True
-BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_dataset.pth')
+BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_dataset_new.pth')
 boundary_model = None
 if DRAW_DYNAMIC_BOUNDARY and os.path.exists(BOUNDARY_MODEL_PATH):
     boundary_model = SafetyNetwork().to(device)

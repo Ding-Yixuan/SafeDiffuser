@@ -1045,9 +1045,9 @@ class GaussianDiffusion(nn.Module):
         # clip_value = config.get('clip', 0.01)
         # 读取 Threshold (警戒线)
         # threshold = config.get('threshold', 0.05)
-        alpha = config.get('alpha', 0.11) 
-        clip_value = config.get('clip', 0.01)
-        threshold = config.get('threshold', 0.03)
+        alpha = config.get('alpha', 0.05) 
+        clip_value = config.get('clip', 0.5)
+        threshold = config.get('threshold', 0.05)
         # 1. 准备数据
         original_shape = xp1.shape
         xp1_flat = xp1.view(-1, xp1.shape[-1])
@@ -1077,7 +1077,24 @@ class GaussianDiffusion(nn.Module):
         phys_vel = (norm_vel + 1) / 2 * width[param_vel_idx] + mins[param_vel_idx]
         
         phys_state = torch.cat([phys_pos, phys_vel], dim=1)
+        # ==================== [新增的照妖镜：排查下方的墙] ====================
+        # 假设下方墙壁的中心大约在 Y=2.5 左右
+        # 抓取所有 Y 在 1.5 到 3.5 之间，X 在 1.5 到 3.5 之间的机器人状态
+        lower_wall_mask = (phys_pos[:, 1] > 1.5) & (phys_pos[:, 1] < 3.5) & \
+                          (phys_pos[:, 0] > 1.5) & (phys_pos[:, 0] < 3.5)
         
+        if lower_wall_mask.sum() > 0:
+            # 随机抓取一个在下方墙壁附近的数据点
+            idx = torch.where(lower_wall_mask)[0][0]
+            p_x, p_y = phys_pos[idx, 0].item(), phys_pos[idx, 1].item()
+            v_x, v_y = phys_vel[idx, 0].item(), phys_vel[idx, 1].item()
+            
+            # 临时算一下它的 h 值
+            with torch.no_grad():
+                test_h = self.neural_cbf.model(phys_state[idx:idx+1]).item()
+            
+            print(f"👀 [下墙监控] 位置:({p_x:.2f}, {p_y:.2f}) | 速度:({v_x:.2f}, {v_y:.2f}) -> h={test_h:.3f}")
+        # ====================================================================
         # 4. 获取梯度
         h_val, grad_phys = self.neural_cbf.get_correction_gradient(phys_state)
         
@@ -1099,7 +1116,27 @@ class GaussianDiffusion(nn.Module):
         
         # 最终修正量
         delta = delta * is_unsafe
-        
+        # is_unsafe = torch.ones_like(h_val) # 全部标记为不安全，全图开启护盾
+        # delta = delta * 1.0 # 直接应用所有推力
+        # 更优雅的写法，只在真正危险 (h < 0) 时发力
+        # is_unsafe = (h_val < 0.0).float() # 小于0就亮红灯
+        # delta = delta * is_unsafe
+        if is_unsafe.sum() > 0:
+            # 计算每个点被推移的欧几里得距离 (Norm)
+            delta_norm = torch.linalg.norm(delta, dim=1) 
+            
+            # 过滤出真正被修改了的点 (delta > 0)
+            active_mask = delta_norm > 1e-7 
+            num_modified = active_mask.sum().item()
+            
+            if num_modified > 0:
+                active_deltas = delta_norm[active_mask]
+                max_delta = active_deltas.max().item()
+                mean_delta = active_deltas.mean().item()
+                
+                print(f"[CBF] ⚠️ 触发危险! 强行修改了 {num_modified} 个轨迹路点.")
+                print(f"      推力大小 (Delta): 最大 = {max_delta:.5f}, 平均 = {mean_delta:.5f}")
+
         # --- 新逻辑 End ---
 
         # 6. 调试打印 (可选)

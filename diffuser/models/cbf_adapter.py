@@ -4,25 +4,108 @@ import numpy as np
 import os
 
 # ================= 配置区域 =================
+# 说明：当前 TTC 模型以“绝对坐标 + 速度”训练（多墙全图标签）
+USE_ABSOLUTE_INPUT = True
+
+# 用于打印验证（不参与推理）
+MAZE_MAP_LARGE = [
+    "OOOOOOOOOOOO",
+    "OOO#OOOOOOOO",
+    "OOO#OOOOOOOO",
+    "OOOOOOOOOOOO",
+    "OOO#OOOOOOOO",
+    "OOO#OOOOOOOO",
+    "OOO#OOOOOOOO",
+    "OOOOOOOOOOOO",
+    "OOOOOOOOOOOO",
+]
+# ===========================================
+
+def parse_maze_map_to_obstacles(map_lines):
+    rows = len(map_lines)
+    cols = len(map_lines[0]) if rows > 0 else 0
+    grid = np.array([[c == '#' for c in line] for line in map_lines], dtype=bool)
+    visited = np.zeros_like(grid, dtype=bool)
+    obstacles = []
+
+    def neighbors(r, c):
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                yield nr, nc
+
+    for r in range(rows):
+        for c in range(cols):
+            if not grid[r, c] or visited[r, c]:
+                continue
+            stack = [(r, c)]
+            visited[r, c] = True
+            cells = []
+            while stack:
+                cr, cc = stack.pop()
+                cells.append((cr, cc))
+                for nr, nc in neighbors(cr, cc):
+                    if grid[nr, nc] and not visited[nr, nc]:
+                        visited[nr, nc] = True
+                        stack.append((nr, nc))
+
+            rows_idx = [cell[0] for cell in cells]
+            cols_idx = [cell[1] for cell in cells]
+            r_min, r_max = min(rows_idx), max(rows_idx)
+            c_min, c_max = min(cols_idx), max(cols_idx)
+
+            center_row = (r_min + r_max) / 2.0
+            center_col = (c_min + c_max) / 2.0
+            half_h = (r_max - r_min + 1) / 2.0
+            half_w = (c_max - c_min + 1) / 2.0
+
+            obstacles.append({
+                # 【修改】：X 是 col，Y 是 row
+                "center": np.array([center_col, center_row], dtype=np.float32),
+                # 【修改】：宽度是 w，高度是 h
+                "half_extents": np.array([half_w, half_h], dtype=np.float32),
+            })
+    #        1. 计算以左上角为原点的中心
+    #         raw_center_row = (r_min + r_max + 1) / 2.0
+    #         center_col = (c_min + c_max + 1) / 2.0
+            
+    #         # 2. 【核心修正：翻转 Y 轴！】 
+    #         # 物理 Y = 总行数 - 矩阵行数
+    #         total_rows = len(map_lines) 
+    #         center_y = total_rows - raw_center_row  # 这样 Row 0 (最上面) 就会变成最大的 Y 值！
+            
+    #         # X 轴不需要翻转，直接等于 Col
+    #         center_x = center_col 
+            
+    #         half_h = (r_max - r_min + 1) / 2.0
+    #         half_w = (c_max - c_min + 1) / 2.0
+
+    #         obstacles.append({
+    #             # X 是 col(center_x), Y 是翻转后的 row(center_y)
+    #             "center": np.array([center_x, center_y], dtype=np.float32), 
+    #             # 宽对应 X(w), 高对应 Y(h)
+    #             "half_extents": np.array([half_w, half_h], dtype=np.float32),
+    #         })
+    return obstacles
+
+# ================= 模型区域 =================
 # 障碍物中心 (必须和训练时一致)
-TARGET_OBSTACLE = torch.tensor([1.5, 5.0]) 
+# TARGET_OBSTACLE = torch.tensor([1.5, 5.0]) 
 
 # 模型文件名 (假设在同级目录或根目录)
 MODEL_FILENAME = "ttc_model_dataset.pth"
 # ===========================================
 
 class SafetyNetwork(nn.Module):
-    """
-    TTC 网络结构 (4 -> 128 -> 128 -> 1)
-    """
     def __init__(self):
         super().__init__()
+        # 【修改】：全部改为 256 维
         self.net = nn.Sequential(
-            nn.Linear(4, 128), 
+            nn.Linear(4, 256), 
             nn.ReLU(),
-            nn.Linear(128, 128),
+            nn.Linear(256, 256),
             nn.ReLU(),
-            nn.Linear(128, 1) 
+            nn.Linear(256, 1) 
         )
     
     def forward(self, x):
@@ -31,7 +114,13 @@ class SafetyNetwork(nn.Module):
 class NeuralBarrierAdapter:
     def __init__(self, device='cuda'):
         self.device = device
-        
+        self.debug_every = 200
+        self._dbg_calls = 0
+
+        # 用于打印验证（多墙数量）
+        self.obstacles = parse_maze_map_to_obstacles(MAZE_MAP_LARGE)
+        self.obstacles_count = len(self.obstacles)
+
         # 1. 自动寻找模型路径 (兼容不同运行目录)
         current_dir = os.path.dirname(os.path.abspath(__file__))
         # 尝试在当前目录找
@@ -50,41 +139,44 @@ class NeuralBarrierAdapter:
             model_path = None
 
         # 2. 初始化网络
-        self.center = TARGET_OBSTACLE.to(device)
+        # self.center = TARGET_OBSTACLE.to(device)
         self.model = SafetyNetwork().to(device)
-        
+
         if model_path:
             try:
                 state_dict = torch.load(model_path, map_location=device)
                 self.model.load_state_dict(state_dict)
                 self.model.eval()
                 print(f"[NeuralBarrier] ✅ 成功加载 TTC 模型: {model_path}")
-                print(f"[NeuralBarrier] 🎯 避障中心: {self.center.cpu().numpy()}")
+                print(f"[NeuralBarrier] 🧱 多墙数量: {self.obstacles_count}")
+                print(f"[NeuralBarrier] 📌 输入模式: {'absolute' if USE_ABSOLUTE_INPUT else 'relative'}")
             except Exception as e:
                 print(f"[NeuralBarrier] ❌ 加载模型失败: {e}")
-            
+
+    def summary(self):
+        return f"mode={'absolute' if USE_ABSOLUTE_INPUT else 'relative'}, walls={self.obstacles_count}"
+
     def get_correction_gradient(self, phys_state):
         """
         Input: phys_state [Batch, 4] -> [x, y, vx, vy] (绝对坐标)
         Output: h_val, grad_pos
         """
-        # 1. Clone并开启梯度
         x_in = phys_state.clone().detach().requires_grad_(True)
-        
+
         with torch.enable_grad():
-            pos = x_in[:, :2]
-            vel = x_in[:, 2:4]
-            
-            # 2. 坐标变换 (绝对 -> 相对)
-            # Input: [px - ox, py - oy, vx, vy]
-            rel_pos = pos - self.center
-            net_input = torch.cat([rel_pos, vel], dim=1)
-            
-            # 3. 前向传播
-            # h > 0: 安全, h < 0: 危险
+            if USE_ABSOLUTE_INPUT:
+                net_input = x_in[:, :4]
+            else:
+                # 这里保留相对坐标的计算，以备将来扩展
+                pos = x_in[:, :2]
+                vel = x_in[:, 2:4]
+                
+                # 坐标变换 (绝对 -> 相对)
+                rel_pos = pos - self.center
+                net_input = torch.cat([rel_pos, vel], dim=1)
+
             h_val = self.model(net_input)
-            
-            # 4. 计算梯度 (我们希望 h 变大/更安全)
+
             grads = torch.autograd.grad(
                 outputs=h_val,
                 inputs=x_in,
@@ -92,8 +184,14 @@ class NeuralBarrierAdapter:
                 create_graph=False,
                 retain_graph=False
             )[0]
-            
-            # 取出对位置 (x, y) 的梯度
+
             grad_pos = grads[:, :2]
-            
+
+        # 轻量调试：证明 CBF 正在被调用/调整
+        self._dbg_calls += 1
+        if (self._dbg_calls % self.debug_every == 0) or (h_val.min().item() < 0):
+            grad_norm = torch.linalg.vector_norm(grad_pos, dim=1).mean().item()
+            min_h = h_val.min().item()
+            print(f"[NeuralBarrier] CBF调用#{self._dbg_calls} | min_h={min_h:.4f} | mean|grad_pos|={grad_norm:.4f}")
+
         return h_val.detach(), grad_pos.detach()

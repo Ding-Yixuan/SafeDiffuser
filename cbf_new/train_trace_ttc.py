@@ -14,12 +14,12 @@ import os
 # 支持多墙：通过地图中的 # 自动生成墙块（按连通块合并成矩形）
 MAZE_MAP_LARGE = [
     "OOOOOOOOOOOO",
-    "OOO#OOOOOOOO",
-    "OOO#OOOOOOOO",
-    "OOOOOOOOOOOO",
-    "OOO#OOOOOOOO",
-    "OOO#OOOOOOOO",
-    "OOO#OOOOOOOO",
+    "OOOOO#OOOOOO",
+    "OOOOO#O#OOOO",
+    "OOOOOOO#OOOO",
+    "OOOOO#O#OOOO",
+    "OOOOO#OOOOOO",
+    "OOOOO#OOOOOO",
     "OOOOOOOOOOOO",
     "OOOOOOOOOOOO",
 ]
@@ -37,7 +37,7 @@ ROI_RADIUS = 4.0       # 筛选数据的范围 (只看墙周围3米的数据)
 TTC_LOOKAHEAD = 1.0    # 预测未来几秒 (让速度v发挥作用的关键!)
 BATCH_SIZE = 4096
 LR = 1e-3
-EPOCHS = 300
+EPOCHS = 100
 
 # 可选：通过环境变量快速覆盖训练参数（便于观察收敛）
 EPOCHS = int(os.environ.get("TTC_EPOCHS", EPOCHS))
@@ -128,14 +128,14 @@ def parse_maze_map_to_obstacles(map_lines):
             c_min, c_max = min(cols_idx), max(cols_idx)
 
             # 坐标约定：pos[:,0] 是“行/y”，pos[:,1] 是“列/x”
-            center_row = (r_min + r_max + 1) / 2.0
-            center_col = (c_min + c_max + 1) / 2.0
+            center_row = (r_min + r_max) / 2.0
+            center_col = (c_min + c_max) / 2.0
             half_h = (r_max - r_min + 1) / 2.0
             half_w = (c_max - c_min + 1) / 2.0
 
             obstacles.append({
-                "center": np.array([center_row, center_col], dtype=np.float32),
-                "half_extents": np.array([half_h, half_w], dtype=np.float32),
+                "center": np.array([center_col, center_row], dtype=np.float32),
+                "half_extents": np.array([half_w, half_h], dtype=np.float32),
             })
 
     return obstacles
@@ -263,11 +263,11 @@ class SafetyNetwork(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(4, 128), 
+            nn.Linear(4, 256), 
             nn.ReLU(),
-            nn.Linear(128, 128),
+            nn.Linear(256, 256),
             nn.ReLU(),
-            nn.Linear(128, 1) 
+            nn.Linear(256, 1) 
         )
     
     def forward(self, x):
@@ -309,8 +309,8 @@ for epoch in range(EPOCHS):
         print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {avg_loss:.6f}")
 
 # 保存模型
-torch.save(model.state_dict(), "ttc_model_dataset.pth")
-print("模型已保存为 ttc_model_dataset.pth")
+torch.save(model.state_dict(), "ttc_model_dataset_new.pth")
+print("模型已保存为 ttc_model_dataset_new.pth")
 
 # 保存 loss 曲线
 # plt.figure(figsize=(6, 4))
