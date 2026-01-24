@@ -52,7 +52,7 @@ dataset = diffusion_experiment.dataset
 renderer = diffusion_experiment.renderer
 
 ## enable CBF
-USE_CBF = False
+USE_CBF = True
 if USE_CBF:
     print("\n🚀 [System] 正在启动 CBF 安全护盾...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'

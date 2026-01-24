@@ -8,6 +8,14 @@ import json
 import numpy as np
 from os.path import join
 import pdb
+import torch.nn as nn
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib import patches
+import imageio
+import einops
+from diffuser.utils.rendering import MAZE_BOUNDS, plot2img
 
 from diffuser.guides.policies import Policy
 import diffuser.datasets as datasets
@@ -31,6 +39,8 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 args = Parser().parse_args('plan')
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 env = datasets.load_environment(args.dataset)
 
 #---------------------------------- loading ----------------------------------#
@@ -45,7 +55,6 @@ renderer = diffusion_experiment.renderer
 USE_CBF = True
 if USE_CBF:
     print("\n启动 CBF (Neural Barrier)")
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # [修改点 1] 初始化时不传文件名，让 Adapter 自己处理
     adapter = NeuralBarrierAdapter(device=device)
@@ -78,6 +87,444 @@ def smooth(diffusion):
     
     return diffusion_copy
 
+#---------------------------------- dynamic safe boundary ----------------------------------#
+def plot_barrier_boundary_2d(
+    model,
+    domain,
+    plot_len=(300, 300),
+    width=0.1,
+    norm_eps=1e-6,
+    ax=None,
+    device=None,
+):
+    if ax is None:
+        ax = plt.gca()
+
+    if device is None:
+        device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
+
+    nx, ny = int(plot_len[0]), int(plot_len[1])
+    (xmin, xmax), (ymin, ymax) = domain
+
+    xs = torch.linspace(xmin, xmax, nx, device=device, dtype=dtype)
+    ys = torch.linspace(ymin, ymax, ny, device=device, dtype=dtype)
+
+    Y, X = torch.meshgrid(ys, xs)
+    pts = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=1)
+
+    model.eval()
+
+    prev_req = [p.requires_grad for p in model.parameters()]
+    model.requires_grad_(False)
+
+    pts.requires_grad_(True)
+    B = model(pts)
+
+    if B.dim() > 1 and B.shape[1] != 1:
+        B = B[:, :1]
+    B = B.reshape(-1, 1)
+
+    grad = torch.autograd.grad(
+        outputs=B.sum(),
+        inputs=pts,
+        create_graph=False,
+        retain_graph=False,
+        allow_unused=False
+    )[0]
+
+    pts.requires_grad_(False)
+
+    grad_norm = torch.clamp(torch.linalg.vector_norm(grad, dim=1), min=norm_eps)
+    normed_B = (B.squeeze(1) / grad_norm)
+
+    Z = normed_B.detach().cpu().numpy().reshape(ny, nx)
+
+    x_np = xs.detach().cpu().numpy()
+    y_np = ys.detach().cpu().numpy()
+    X_np, Y_np = np.meshgrid(x_np, y_np)
+
+    min_val = float(np.min(Z))
+    max_val = float(np.max(Z))
+    levels = [-width, 0.0, width]
+    use_default_labels = True
+    if max_val - min_val < 1e-6:
+        return None
+    if min_val > levels[0] or max_val < levels[-1]:
+        levels = [min_val, 0.5 * (min_val + max_val), max_val]
+        use_default_labels = False
+
+    contour = ax.contour(
+        X_np, Y_np, Z,
+        levels=levels,
+        linestyles=["dotted", "solid", "dotted"],
+        linewidths=[1.5, 2.5, 1.5],
+        colors=["red", "blue", "green"],
+        zorder=30,
+    )
+    if use_default_labels:
+        ax.clabel(contour, inline=True, fontsize=10, fmt={-width:'Dangerous', 0.0:'Boundary', width:'Safe'})
+
+    for p, r in zip(model.parameters(), prev_req):
+        p.requires_grad_(r)
+
+    return contour
+
+
+def normalize_maze_xy(xy, env_name):
+    bounds = MAZE_BOUNDS[env_name]
+    xy = xy + 0.5
+    if len(bounds) == 2:
+        _, scale = bounds
+        xy[:, 0] /= scale
+        xy[:, 1] /= scale
+        return xy, scale, scale
+    if len(bounds) == 4:
+        _, iscale, _, jscale = bounds
+        xy[:, 0] /= iscale
+        xy[:, 1] /= jscale
+        return xy, iscale, jscale
+    raise RuntimeError(f"Unrecognized bounds for {env_name}: {bounds}")
+
+
+def plot_barrier_boundary_on_maze(
+    model,
+    domain,
+    env_name,
+    plot_len=(300, 300),
+    width=0.1,
+    norm_eps=1e-6,
+    ax=None,
+    device=None,
+):
+    if ax is None:
+        ax = plt.gca()
+
+    if device is None:
+        device = next(model.parameters()).device
+    dtype = next(model.parameters()).dtype
+
+    nx, ny = int(plot_len[0]), int(plot_len[1])
+    (xmin, xmax), (ymin, ymax) = domain
+
+    xs = torch.linspace(xmin, xmax, nx, device=device, dtype=dtype)
+    ys = torch.linspace(ymin, ymax, ny, device=device, dtype=dtype)
+
+    Y, X = torch.meshgrid(ys, xs)
+    pts = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=1)
+
+    model.eval()
+    prev_req = [p.requires_grad for p in model.parameters()]
+    model.requires_grad_(False)
+
+    pts.requires_grad_(True)
+    B = model(pts)
+    if B.dim() > 1 and B.shape[1] != 1:
+        B = B[:, :1]
+    B = B.reshape(-1, 1)
+
+    grad = torch.autograd.grad(
+        outputs=B.sum(),
+        inputs=pts,
+        create_graph=False,
+        retain_graph=False,
+        allow_unused=False
+    )[0]
+
+    pts.requires_grad_(False)
+
+    grad_norm = torch.clamp(torch.linalg.vector_norm(grad, dim=1), min=norm_eps)
+    normed_B = (B.squeeze(1) / grad_norm)
+
+    Z = normed_B.detach().cpu().numpy().reshape(ny, nx)
+
+    X_world = X.detach().cpu().numpy()-0.5
+    Y_world = Y.detach().cpu().numpy()+1.5
+    grid = np.stack([X_world.reshape(-1), Y_world.reshape(-1)], axis=1)
+    grid_norm, iscale, jscale = normalize_maze_xy(grid, env_name)
+    X_norm = grid_norm[:, 0].reshape(ny, nx)
+    Y_norm = grid_norm[:, 1].reshape(ny, nx)
+
+    min_val = float(np.min(Z))
+    max_val = float(np.max(Z))
+    levels = [-width, 0.0, width]
+    use_default_labels = True
+    if max_val - min_val < 1e-6:
+        return None
+    if min_val > levels[0] or max_val < levels[-1]:
+        levels = [min_val, 0.5 * (min_val + max_val), max_val]
+        use_default_labels = False
+
+    contour = ax.contour(
+        Y_norm, X_norm, Z,
+        levels=levels,
+        linestyles=["dotted", "solid", "dotted"],
+        linewidths=[1.5, 2.5, 1.5],
+        colors=["red", "blue", "green"],
+        zorder=30,
+    )
+    if use_default_labels:
+        ax.clabel(contour, inline=True, fontsize=10, fmt={-width:'Dangerous', 0.0:'Boundary', width:'Safe'})
+
+    for p, r in zip(model.parameters(), prev_req):
+        p.requires_grad_(r)
+
+    return contour
+
+
+class SafetyNetwork(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(4, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class VelocityWrapper(nn.Module):
+    def __init__(self, base_model, velocity):
+        super().__init__()
+        self.base_model = base_model
+        self.register_buffer('velocity', velocity)
+
+    # def forward(self, pts_2d):
+    #     batch_size = pts_2d.shape[0]
+    #     v_expanded = self.velocity.unsqueeze(0).expand(batch_size, -1)
+    #     inputs = torch.cat([pts_2d, v_expanded], dim=1)
+    #     return self.base_model(inputs)
+
+def forward(self, pts_2d):
+        # pts_2d 是绝对坐标 [x, y]，直接拼上 [vx, vy] 喂给模型
+        batch_size = pts_2d.shape[0]
+        v_expanded = self.velocity.unsqueeze(0).expand(batch_size, -1)
+        return self.base_model(torch.cat([pts_2d, v_expanded], dim=1))
+
+
+
+# class CenteredVelocityWrapper(nn.Module):
+#     def __init__(self, base_model, center, velocity):
+#         super().__init__()
+#         self.base_model = base_model
+#         self.register_buffer('center', torch.as_tensor(center, dtype=velocity.dtype, device=velocity.device))
+#         self.register_buffer('velocity', velocity)
+
+#     def forward(self, pts_2d):
+#         batch_size = pts_2d.shape[0]
+#         v_expanded = self.velocity.unsqueeze(0).expand(batch_size, -1)
+#         rel_pts = pts_2d - self.center.unsqueeze(0)
+#         inputs = torch.cat([rel_pts, v_expanded], dim=1)
+#         return self.base_model(inputs)
+
+class VelocityWrapper(nn.Module):
+    def __init__(self, base_model, velocity):
+        super().__init__()
+        self.base_model = base_model
+        # 将速度作为模型的固定缓冲区
+        self.register_buffer('velocity', velocity)
+
+    def forward(self, pts_2d):
+        # pts_2d 是网格上的绝对坐标 [N, 2]
+        # 复制速度，使其与网格点数量一致
+        batch_size = pts_2d.shape[0]
+        v_expanded = self.velocity.unsqueeze(0).expand(batch_size, -1)
+        
+        # 拼接成 [N, 4] -> [x, y, vx, vy]，直接喂给绝对坐标模型
+        inputs = torch.cat([pts_2d, v_expanded], dim=1)
+        return self.base_model(inputs)
+
+def get_boundary_domain(center, half_extents, padding=2.0):
+    return [
+        (center[0] - half_extents[0] - padding, center[0] + half_extents[0] + padding),
+        (center[1] - half_extents[1] - padding, center[1] + half_extents[1] + padding),
+    ]
+
+
+def save_dynamic_boundary_plot(model, velocity, domain, wall_center, wall_half_extents, save_path):
+    if model is None:
+        return
+
+    fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+    model_param = next(model.parameters())
+    v_tensor = torch.tensor(velocity, device=model_param.device, dtype=model_param.dtype)
+    wrapper = VelocityWrapper(model, v_tensor)
+
+    plot_barrier_boundary_2d(wrapper, domain, ax=ax, width=0.1)
+
+    # rect = patches.Rectangle(
+    #     (wall_center[0] - wall_half_extents[0], wall_center[1] - wall_half_extents[1]),
+    #     2.0 * wall_half_extents[0],
+    #     2.0 * wall_half_extents[1],
+    #     fill=False,
+    #     color='orange',
+    #     linewidth=2,
+    #     label='Real Wall'
+    # )
+    rect = patches.Rectangle(
+                (col_min, row_min),        # 起点: (Col, Row)
+                col_max - col_min,         # 宽度: Col 跨度
+                row_max - row_min,         # 高度: Row 跨度
+                fill=False,
+                color='orange',
+                linewidth=2,
+                label='Real Wall'
+            )
+    plt.gca().add_patch(rect)
+    ax.add_patch(rect)
+
+    ax.arrow(0, 0, 0.5 * velocity[0], 0.5 * velocity[1], head_width=0.1, color='black', label='Velocity')
+    ax.set_title(f"Dynamic Safety Boundary (v=[{velocity[0]:.2f}, {velocity[1]:.2f}])")
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+
+
+# def save_runs_with_boundary(
+#     savepath,
+#     paths,
+#     renderer,
+#     env_name,
+#     boundary_model,
+#     velocity,
+#     domain,
+#     wall_center,
+#     wall_half_extents,
+#     ncol=1,
+# ):
+#     assert len(paths) % ncol == 0, 'Number of paths must be divisible by number of columns'
+#     images = []
+
+#     for path in paths:
+#         path = np.array(path)
+#         if path.ndim > 2:
+#             path = path.squeeze(0)
+
+#         plt.clf()
+#         fig = plt.gcf()
+#         fig.set_size_inches(5, 5)
+#         plt.imshow(renderer._background * .5,
+#             extent=renderer._extent, cmap=plt.cm.binary, vmin=0, vmax=1)
+
+#         obs_xy = path[:, :2].copy()
+#         obs_norm, iscale, jscale = normalize_maze_xy(obs_xy, env_name)
+#         plt.plot(obs_norm[:, 1], obs_norm[:, 0], c='black', zorder=10)
+#         colors = plt.cm.jet(np.linspace(0, 1, len(obs_norm)))
+#         plt.scatter(obs_norm[:, 1], obs_norm[:, 0], c=colors, zorder=20)
+
+#         if boundary_model is not None:
+#             v_tensor = torch.tensor(velocity, device=next(boundary_model.parameters()).device,
+#                                     dtype=next(boundary_model.parameters()).dtype)
+#             wrapper = CenteredVelocityWrapper(boundary_model, wall_center, v_tensor)
+#             plot_barrier_boundary_on_maze(wrapper, domain, env_name, ax=plt.gca(), width=0.1)
+
+#             x_min = wall_center[0] - wall_half_extents[0]
+#             x_max = wall_center[0] + wall_half_extents[0]
+#             y_min = wall_center[1] - wall_half_extents[1]
+#             y_max = wall_center[1] + wall_half_extents[1]
+#             rect_pts = np.array([[x_min, y_min], [x_max, y_max]])
+#             rect_norm, _, _ = normalize_maze_xy(rect_pts, env_name)
+#             rect_x_min = rect_norm[0, 0]
+#             rect_y_min = rect_norm[0, 1]
+#             rect_x_max = rect_norm[1, 0]
+#             rect_y_max = rect_norm[1, 1]
+
+#             rect = patches.Rectangle(
+#                 (rect_y_min, rect_x_min),
+#                 rect_y_max - rect_y_min,
+#                 rect_x_max - rect_x_min,
+#                 fill=False,
+#                 color='orange',
+#                 linewidth=2,
+#                 label='Real Wall'
+#             )
+#             plt.gca().add_patch(rect)
+
+#         plt.axis('off')
+#         img = plot2img(fig, remove_margins=renderer._remove_margins)
+#         images.append(img)
+
+#     images = np.stack(images, axis=0)
+#     nrow = len(images) // ncol
+#     images = einops.rearrange(images,
+#         '(nrow ncol) H W C -> (nrow H) (ncol W) C', nrow=nrow, ncol=ncol)
+#     imageio.imsave(savepath, images)
+
+# -----------------------------------------------------------------------------#
+# 修改 2: 全图多墙可视化函数
+# -----------------------------------------------------------------------------#
+def save_runs_with_boundary(
+    savepath,
+    paths,
+    renderer,
+    env_name,
+    boundary_model,
+    velocity,
+    domain,
+    all_obstacles,  # <--- 传入所有的墙
+    ncol=1,
+):
+    assert len(paths) % ncol == 0
+    images = []
+
+    for path in paths:
+        path = np.array(path)
+        if path.ndim > 2: path = path.squeeze(0)
+
+        plt.clf()
+        fig = plt.gcf()
+        fig.set_size_inches(5, 5)
+        # 渲染底图
+        plt.imshow(renderer._background * .5, extent=renderer._extent, cmap=plt.cm.binary, vmin=0, vmax=1)
+
+        # 画轨迹点
+        obs_xy = path[:, :2].copy()
+        obs_norm, iscale, jscale = normalize_maze_xy(obs_xy, env_name)
+        plt.plot(obs_norm[:, 1], obs_norm[:, 0], c='black', zorder=10)
+        colors = plt.cm.jet(np.linspace(0, 1, len(obs_norm)))
+        plt.scatter(obs_norm[:, 1], obs_norm[:, 0], c=colors, zorder=20)
+
+        # 画全图动态安全边界
+        if boundary_model is not None:
+            v_tensor = torch.tensor(velocity, device=next(boundary_model.parameters()).device, dtype=next(boundary_model.parameters()).dtype)
+            # 【关键】使用直接拼凑的 Wrapper，不再减去中心
+            wrapper = VelocityWrapper(boundary_model, v_tensor)
+            plot_barrier_boundary_on_maze(wrapper, domain, env_name, ax=plt.gca(), width=0.1)
+
+            # 画出所有的真实物理墙壁 (黄框)
+            for obs in all_obstacles:
+                c = obs["center"]
+                hw = obs["half_extents"]
+                rect_pts = np.array([
+                    [c[0] - hw[0], c[1] - hw[1]], # 左下
+                    [c[0] + hw[0], c[1] + hw[1]]  # 右上
+                ])
+                rect_norm, _, _ = normalize_maze_xy(rect_pts, env_name)
+                
+                rect = patches.Rectangle(
+                    (rect_norm[0, 1], rect_norm[0, 0]), # matplotlib 的矩形参数是 (Y, X)
+                    rect_norm[1, 1] - rect_norm[0, 1],
+                    rect_norm[1, 0] - rect_norm[0, 0],
+                    fill=False, color='orange', linewidth=2, label='Real Wall' if obs is all_obstacles[0] else ""
+                )
+                plt.gca().add_patch(rect)
+
+        plt.axis('off')
+        img = plot2img(fig, remove_margins=renderer._remove_margins)
+        images.append(img)
+
+    images = np.stack(images, axis=0)
+    images = einops.rearrange(images, '(nrow ncol) H W C -> (nrow H) (ncol W) C', nrow=len(images)//ncol, ncol=ncol)
+    imageio.imsave(savepath, images)
+
 #---------------------------------- main loop ----------------------------------#
 score_batch = []
 comp_time = []
@@ -94,38 +541,120 @@ runs_summary = []
 # ==============================================================================
 # 2. 碰撞检测
 # ==============================================================================
-print("正在配置目标障碍物碰撞检测...")
+# print("正在配置目标障碍物碰撞检测...")
 
-# 我们关注的障碍物中心和尺寸 (与训练时一致)
-TARGET_CENTER = np.array([1.5, 5.0])
-HALF_EXTENTS = np.array([1.0, 0.5])  # 宽2米, 高1米的横向墙壁
+# # 我们关注的障碍物中心和尺寸 (与训练时一致)
+# TARGET_CENTER = np.array([1.5, 5.0])
+# HALF_EXTENTS = np.array([1.0, 0.5])  # 宽2米, 高1米的横向墙壁
+# BOUNDARY_DOMAIN = get_boundary_domain(TARGET_CENTER, HALF_EXTENTS, padding=2.0)
+BOUNDARY_VELOCITY_OVERRIDE = np.array([0.0, 0.0])  # 例如设置为 np.array([0.0, 0.0])
 
-def get_target_box_distance(pos):
-    """计算机器人到目标矩形表面的最短距离"""
-    rel_pos = pos - TARGET_CENTER
-    d = np.abs(rel_pos) - HALF_EXTENTS
-    # 外部距离
-    outside_dist = np.linalg.norm(np.maximum(d, 0))
-    # 内部距离 (撞进去了就是负数)
-    inside_dist = np.minimum(np.max(d), 0)
-    return outside_dist + inside_dist
+# DRAW_DYNAMIC_BOUNDARY = True
+# BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_dataset.pth')
+# boundary_model = None
+# if DRAW_DYNAMIC_BOUNDARY:
+#     if os.path.exists(BOUNDARY_MODEL_PATH):
+#         boundary_model = SafetyNetwork().to(device)
+#         boundary_model.load_state_dict(torch.load(BOUNDARY_MODEL_PATH, map_location=device))
+#         boundary_model.eval()
+#         print(f"动态安全边界模型已加载: {BOUNDARY_MODEL_PATH}")
+#     else:
+#         print(f"未找到动态边界模型，已跳过: {BOUNDARY_MODEL_PATH}")
+#         DRAW_DYNAMIC_BOUNDARY = False
 
+# def get_target_box_distance(pos):
+#     """计算机器人到目标矩形表面的最短距离"""
+#     rel_pos = pos - TARGET_CENTER
+#     d = np.abs(rel_pos) - HALF_EXTENTS
+#     # 外部距离
+#     outside_dist = np.linalg.norm(np.maximum(d, 0))
+#     # 内部距离 (撞进去了就是负数)
+#     inside_dist = np.minimum(np.max(d), 0)
+#     return outside_dist + inside_dist
 
+print("正在配置全图障碍物与可视化...")
+
+# 1. 重新解析全图的墙壁 (用于画黄框)
+MAZE_MAP_LARGE = [
+    "OOOOOOOOOOOO", 
+    "OOO#OOOOOOOO", 
+    "OOO#OOOOOOOO", 
+    "OOOOOOOOOOOO",
+    "OOO#OOOOOOOO", 
+    "OOO#OOOOOOOO", 
+    "OOO#OOOOOOOO", 
+    "OOOOOOOOOOOO", 
+    "OOOOOOOOOOOO",
+]
+def parse_maze_map(map_lines):
+    rows = len(map_lines); cols = len(map_lines[0])
+    grid = np.array([[c == '#' for c in line] for line in map_lines], dtype=bool)
+    visited = np.zeros_like(grid, dtype=bool)
+    obstacles = []
+    for r in range(rows):
+        for c in range(cols):
+            if not grid[r, c] or visited[r, c]: continue
+            stack = [(r, c)]; visited[r, c] = True; cells = []
+            while stack:
+                cr, cc = stack.pop(); cells.append((cr, cc))
+                for nr, nc in [(cr-1, cc), (cr+1, cc), (cr, cc-1), (cr, cc+1)]:
+                    if 0<=nr<rows and 0<=nc<cols and grid[nr, nc] and not visited[nr, nc]:
+                        visited[nr, nc] = True; stack.append((nr, nc))
+            # rows_idx = [cl[0] for cl in cells]; cols_idx = [cl[1] for cl in cells]
+            # obstacles.append({
+            #     "center": np.array([(min(cols_idx)+max(cols_idx)+1)/2.0 + 1.0, (min(rows_idx)+max(rows_idx)+1)/2.0 + 1.0], dtype=np.float32),
+            #     "half_extents": np.array([(max(cols_idx)-min(cols_idx)+1)/2.0, (max(rows_idx)-min(rows_idx)+1)/2.0], dtype=np.float32)
+            # })
+            rows_idx = [cl[0] for cl in cells]; cols_idx = [cl[1] for cl in cells]
+            # center = [x, y] = [col, row]，不额外偏移
+            center_y = (min(cols_idx) + max(cols_idx) + 1) / 2.0
+            center_x = (min(rows_idx) + max(rows_idx) + 1) / 2.0
+            half_y = (max(cols_idx) - min(cols_idx) + 1) / 2.0
+            half_x = (max(rows_idx) - min(rows_idx) + 1) / 2.0
+            obstacles.append({
+                "center": np.array([center_x-0.5, center_y+1.5], dtype=np.float32),
+                "half_extents": np.array([half_x, half_y], dtype=np.float32)
+            })
+    return obstacles
+
+ALL_OBSTACLES = parse_maze_map(MAZE_MAP_LARGE)
+
+# 2. 定义全图渲染范围 X:[0, 12], Y:[0, 10]
+FULL_MAZE_DOMAIN = [(0.0, 12.0), (0.0, 10.0)] 
+
+DRAW_DYNAMIC_BOUNDARY = True
+BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_dataset.pth')
+boundary_model = None
+if DRAW_DYNAMIC_BOUNDARY and os.path.exists(BOUNDARY_MODEL_PATH):
+    boundary_model = SafetyNetwork().to(device)
+    boundary_model.load_state_dict(torch.load(BOUNDARY_MODEL_PATH, map_location=device))
+    boundary_model.eval()
+    print(f"动态安全边界模型已加载: {BOUNDARY_MODEL_PATH}")
+
+def get_closest_box_distance(pos):
+    """计算机器人到全图任意一块墙的最近距离"""
+    dists = []
+    for obs in ALL_OBSTACLES:
+        d = np.abs(pos - obs["center"]) - obs["half_extents"]
+        dists.append(np.linalg.norm(np.maximum(d, 0)) + np.minimum(np.max(d), 0))
+    return np.min(dists)
 
 for iter in range(num):   # num of testing runs
     print("step: ", iter, "/100")
 
     observation = env.reset()    #array([ 0.94875744,  8.93648809, -0.01347715,  0.06358764])
-    observation = np.array([0.94875744,  1, -0.01347715,  0.06358764])   # fix the initial position and final destination for comparison (not needed for general testing)
+    observation = np.array([ 0.94875744,  2.93648809, -0.01347715,  0.06358764])   # fix the initial position and final destination for comparison (not needed for general testing)
     env.set_state(observation[0:2], observation[2:4]) ############################################################ same as the last line
+    run_velocity = observation[2:4].copy()
 
     if args.conditional:
         print('Resetting target')
         env.set_target()
 
     ## set conditioning xy position to be the goal
-    # target = env._target
-    target = np.array([1.0, 10.0])
+    target = env._target
+    # target = np.array([1.0, 10.0])
+    # env.set_target(target)
     print(f"目标点 (Target) 坐标: {target}")
     cond = {
         diffusion.horizon - 1: np.array([*target, 0, 0]),
@@ -160,7 +689,17 @@ for iter in range(num):   # num of testing runs
             current_samples = samples.observations
             actions = samples.actions[0]
             sequence = samples.observations[0]
+            if sequence.shape[0] > 0:
+                seq_pos = sequence[:, :2]
+                # dist_to_box = np.array([get_target_box_distance(p) for p in seq_pos])
+                dist_to_box = np.array([get_closest_box_distance(p) for p in seq_pos])
+                closest_idx = int(np.argmin(dist_to_box))
+                run_velocity = sequence[closest_idx, 2:4].copy()
+            if BOUNDARY_VELOCITY_OVERRIDE is not None:
+                run_velocity = np.array(BOUNDARY_VELOCITY_OVERRIDE, dtype=np.float32)
             diffusion_paths = diffusion_paths[0]
+
+            # 动态边界只叠加到 all_runs_vis 中，不再单独输出 boundary_run 图
 
             # # 添加了10次循环的保存的逻辑
             # if iter == num - 1:
@@ -197,7 +736,8 @@ for iter in range(num):   # num of testing runs
         # 碰撞检测
         pos_xy = next_observation[:2].copy() # 机器人的真实物理坐标
         
-        min_d = get_target_box_distance(pos_xy)
+        # min_d = get_target_box_distance(pos_xy)
+        min_d = get_closest_box_distance(pos_xy)
 
         per_step_min_d.append(min_d)
         
@@ -278,7 +818,35 @@ for iter in range(num):   # num of testing runs
     img_filename = f'run_{iter:03d}_{status_str}_score_{score:.2f}.png'
     
     # 保存图片 (current_samples 是扩散模型生成的规划路径)
-    renderer.composite(join(all_runs_dir, img_filename), current_samples, ncol=1)
+    # if DRAW_DYNAMIC_BOUNDARY and boundary_model is not None:
+    #     save_runs_with_boundary(
+    #         join(all_runs_dir, img_filename),
+    #         current_samples,
+    #         renderer,
+    #         args.dataset,
+    #         boundary_model,
+    #         run_velocity,
+    #         BOUNDARY_DOMAIN,
+    #         TARGET_CENTER,
+    #         HALF_EXTENTS,
+    #         ncol=1,
+    #     )
+    # else:
+    #     renderer.composite(join(all_runs_dir, img_filename), current_samples, ncol=1)
+    if DRAW_DYNAMIC_BOUNDARY and boundary_model is not None:
+        save_runs_with_boundary(
+            join(all_runs_dir, img_filename),
+            current_samples,
+            renderer,
+            args.dataset,
+            boundary_model,
+            run_velocity,
+            FULL_MAZE_DOMAIN, # <--- 改成全图范围
+            ALL_OBSTACLES,    # <--- 改成全部墙壁列表
+            ncol=1,
+        )
+    else:
+        renderer.composite(join(all_runs_dir, img_filename), current_samples, ncol=1)
 
     # 2. [核心修改] 保存逻辑：优先 Success，其次 Safety (MinDist)
     # 逻辑：必须成功，且 (当前的最小距离 > 历史最好的最小距离)
