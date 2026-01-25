@@ -8,14 +8,25 @@ import os
 USE_ABSOLUTE_INPUT = True
 
 # 用于打印验证（不参与推理）
+# MAZE_MAP_LARGE = [
+#     "OOOOOOOOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+# ]
 MAZE_MAP_LARGE = [
     "OOOOOOOOOOOO",
-    "OOO#OOOOOOOO",
-    "OOO#OOOOOOOO",
     "OOOOOOOOOOOO",
-    "OOO#OOOOOOOO",
-    "OOO#OOOOOOOO",
-    "OOO#OOOOOOOO",
+    "OOOOOOO#OOOO",
+    "OOOOOOO#OOOO",
+    "OOOOOOO#OOOO",
+    "OOOOOOOOOOOO",
+    "OOOOOOOOOOOO",
     "OOOOOOOOOOOO",
     "OOOOOOOOOOOO",
 ]
@@ -61,9 +72,9 @@ def parse_maze_map_to_obstacles(map_lines):
 
             obstacles.append({
                 # 【修改】：X 是 col，Y 是 row
-                "center": np.array([center_col, center_row], dtype=np.float32),
+                "center": np.array([center_row, center_col], dtype=np.float32),
                 # 【修改】：宽度是 w，高度是 h
-                "half_extents": np.array([half_w, half_h], dtype=np.float32),
+                "half_extents": np.array([half_h, half_w], dtype=np.float32),
             })
     #        1. 计算以左上角为原点的中心
     #         raw_center_row = (r_min + r_max + 1) / 2.0
@@ -93,7 +104,7 @@ def parse_maze_map_to_obstacles(map_lines):
 # TARGET_OBSTACLE = torch.tensor([1.5, 5.0]) 
 
 # 模型文件名 (假设在同级目录或根目录)
-MODEL_FILENAME = "ttc_model_dataset.pth"
+MODEL_FILENAME = "ttc_model_dataset_1obtest.pth"
 # ===========================================
 
 class SafetyNetwork(nn.Module):
@@ -167,13 +178,14 @@ class NeuralBarrierAdapter:
             if USE_ABSOLUTE_INPUT:
                 net_input = x_in[:, :4]
             else:
-                # 这里保留相对坐标的计算，以备将来扩展
-                pos = x_in[:, :2]
-                vel = x_in[:, 2:4]
+                # # 这里保留相对坐标的计算，以备将来扩展
+                # pos = x_in[:, :2]
+                # vel = x_in[:, 2:4]
                 
-                # 坐标变换 (绝对 -> 相对)
-                rel_pos = pos - self.center
-                net_input = torch.cat([rel_pos, vel], dim=1)
+                # # 坐标变换 (绝对 -> 相对)
+                # rel_pos = pos - self.center
+                # net_input = torch.cat([rel_pos, vel], dim=1)
+                raise ValueError("相对坐标模式未实现，需启用 USE_ABSOLUTE_INPUT=True")
 
             h_val = self.model(net_input)
 
@@ -192,6 +204,6 @@ class NeuralBarrierAdapter:
         if (self._dbg_calls % self.debug_every == 0) or (h_val.min().item() < 0):
             grad_norm = torch.linalg.vector_norm(grad_pos, dim=1).mean().item()
             min_h = h_val.min().item()
-            print(f"[NeuralBarrier] CBF调用#{self._dbg_calls} | min_h={min_h:.4f} | mean|grad_pos|={grad_norm:.4f}")
+            # print(f"[NeuralBarrier] CBF调用#{self._dbg_calls} | min_h={min_h:.4f} | mean|grad_pos|={grad_norm:.4f}")
 
         return h_val.detach(), grad_pos.detach()

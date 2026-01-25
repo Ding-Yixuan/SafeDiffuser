@@ -21,14 +21,25 @@ import os
 #     "OOOOOOOOOOOO",
 #     "OOOOOOOOOOOO",
 # ]
+# MAZE_MAP_LARGE = [
+#     "OOOOOOOOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+# ]
 MAZE_MAP_LARGE = [
     "OOOOOOOOOOOO",
-    "OOOOO#OOOOOO",
-    "OOOOO#O#OOOO",
+    "OOOOOOOOOOOO",
     "OOOOOOO#OOOO",
-    "OOOOO#O#OOOO",
-    "OOOOO#OOOOOO",
-    "OOOOO#OOOOOO",
+    "OOOOOOO#OOOO",
+    "OOOOOOO#OOOO",
+    "OOOOOOOOOOOO",
+    "OOOOOOOOOOOO",
     "OOOOOOOOOOOO",
     "OOOOOOOOOOOO",
 ]
@@ -38,7 +49,7 @@ ROI_RADIUS = 4.0          # 筛选数据的范围
 TTC_LOOKAHEAD = 1.0       # 预测未来几秒
 BATCH_SIZE = 4096
 LR = 1e-3
-EPOCHS = 350
+EPOCHS = 5
 NUM_TRAJ_TO_PLOT = 50     # 可视化时画多少条轨迹
 
 # 环境变量覆盖
@@ -218,7 +229,7 @@ for epoch in range(EPOCHS):
     if (epoch+1) % 10 == 0:
         print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {avg_loss:.6f}")
 
-torch.save(model.state_dict(), "ttc_model_dataset_3ge.pth")
+torch.save(model.state_dict(), "ttc_model_dataset_1obtest.pth")
 
 # 保存 Loss 曲线
 plt.figure(figsize=(6, 4))

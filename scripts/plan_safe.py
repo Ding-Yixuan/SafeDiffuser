@@ -1,5 +1,11 @@
 # python scripts/plan_maze2d.py --config config.maze2d --dataset maze2d-large-v1
 import os
+os.environ["EINOPS_BACKEND"] = "torch"
+import einops
+einops._backends._loaded_backends = {}
+import sys
+
+import os
 import sys
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
@@ -301,78 +307,9 @@ def save_dynamic_boundary_plot(model, velocity, domain, wall_center, wall_half_e
     plt.close(fig)
 
 
-# def save_runs_with_boundary(
-#     savepath,
-#     paths,
-#     renderer,
-#     env_name,
-#     boundary_model,
-#     velocity,
-#     domain,
-#     wall_center,
-#     wall_half_extents,
-#     ncol=1,
-# ):
-#     assert len(paths) % ncol == 0, 'Number of paths must be divisible by number of columns'
-#     images = []
-
-#     for path in paths:
-#         path = np.array(path)
-#         if path.ndim > 2:
-#             path = path.squeeze(0)
-
-#         plt.clf()
-#         fig = plt.gcf()
-#         fig.set_size_inches(5, 5)
-#         plt.imshow(renderer._background * .5,
-#             extent=renderer._extent, cmap=plt.cm.binary, vmin=0, vmax=1)
-
-#         obs_xy = path[:, :2].copy()
-#         obs_norm, iscale, jscale = normalize_maze_xy(obs_xy, env_name)
-#         plt.plot(obs_norm[:, 1], obs_norm[:, 0], c='black', zorder=10)
-#         colors = plt.cm.jet(np.linspace(0, 1, len(obs_norm)))
-#         plt.scatter(obs_norm[:, 1], obs_norm[:, 0], c=colors, zorder=20)
-
-#         if boundary_model is not None:
-#             v_tensor = torch.tensor(velocity, device=next(boundary_model.parameters()).device,
-#                                     dtype=next(boundary_model.parameters()).dtype)
-#             wrapper = CenteredVelocityWrapper(boundary_model, wall_center, v_tensor)
-#             plot_barrier_boundary_on_maze(wrapper, domain, env_name, ax=plt.gca(), width=0.1)
-
-#             x_min = wall_center[0] - wall_half_extents[0]
-#             x_max = wall_center[0] + wall_half_extents[0]
-#             y_min = wall_center[1] - wall_half_extents[1]
-#             y_max = wall_center[1] + wall_half_extents[1]
-#             rect_pts = np.array([[x_min, y_min], [x_max, y_max]])
-#             rect_norm, _, _ = normalize_maze_xy(rect_pts, env_name)
-#             rect_x_min = rect_norm[0, 0]
-#             rect_y_min = rect_norm[0, 1]
-#             rect_x_max = rect_norm[1, 0]
-#             rect_y_max = rect_norm[1, 1]
-
-#             rect = patches.Rectangle(
-#                 (rect_y_min, rect_x_min),
-#                 rect_y_max - rect_y_min,
-#                 rect_x_max - rect_x_min,
-#                 fill=False,
-#                 color='orange',
-#                 linewidth=2,
-#                 label='Real Wall'
-#             )
-#             plt.gca().add_patch(rect)
-
-#         plt.axis('off')
-#         img = plot2img(fig, remove_margins=renderer._remove_margins)
-#         images.append(img)
-
-#     images = np.stack(images, axis=0)
-#     nrow = len(images) // ncol
-#     images = einops.rearrange(images,
-#         '(nrow ncol) H W C -> (nrow H) (ncol W) C', nrow=nrow, ncol=ncol)
-#     imageio.imsave(savepath, images)
 
 # -----------------------------------------------------------------------------#
-# 修改 2: 全图多墙可视化函数
+# 全图多墙可视化函数
 # -----------------------------------------------------------------------------#
 def save_runs_with_boundary(
     savepath,
@@ -415,6 +352,7 @@ def save_runs_with_boundary(
             # 画出所有的真实物理墙壁 (黄框)
             for obs in all_obstacles:
                 c = obs["center"]
+                # print(f"墙中心: {c}")
                 hw = obs["half_extents"]
                 rect_pts = np.array([
                     [c[0] - hw[0], c[1] - hw[1]], # 左下
@@ -488,15 +426,26 @@ BOUNDARY_VELOCITY_OVERRIDE = np.array([0.0, 0.0])  # 例如设置为 np.array([0
 print("正在配置全图障碍物与可视化...")
 
 # 1. 重新解析全图的墙壁 (用于画黄框)
+# MAZE_MAP_LARGE = [
+#     "OOOOOOOOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+# ]
 MAZE_MAP_LARGE = [
-    "OOOOOOOOOOOO", 
-    "OOO#OOOOOOOO", 
-    "OOO#OOOOOOOO", 
     "OOOOOOOOOOOO",
-    "OOO#OOOOOOOO", 
-    "OOO#OOOOOOOO", 
-    "OOO#OOOOOOOO", 
-    "OOOOOOOOOOOO", 
+    "OOOOOOOOOOOO",
+    "OOOOOOO#OOOO",
+    "OOOOOOO#OOOO",
+    "OOOOOOO#OOOO",
+    "OOOOOOOOOOOO",
+    "OOOOOOOOOOOO",
+    "OOOOOOOOOOOO",
     "OOOOOOOOOOOO",
 ]
 def parse_maze_map(map_lines):
@@ -533,7 +482,7 @@ def parse_maze_map(map_lines):
             # })
             # 【核心修改】：X 对应 Row，Y 对应 Col，不加 1
             center_x = (min(rows_idx) + max(rows_idx)) / 2.0  # X 是行
-            center_y = (min(cols_idx) + max(cols_idx)) / 2.0+2  # Y 是列
+            center_y = (min(cols_idx) + max(cols_idx)) / 2.0 # Y 是列
             half_x = (max(rows_idx) - min(rows_idx) + 1) / 2.0
             half_y = (max(cols_idx) - min(cols_idx) + 1) / 2.0
             
@@ -584,7 +533,7 @@ ALL_OBSTACLES = parse_maze_map(MAZE_MAP_LARGE)
 FULL_MAZE_DOMAIN = [(0.0, 12.0), (0.0, 10.0)] 
 
 DRAW_DYNAMIC_BOUNDARY = True
-BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_dataset_new.pth')
+BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_dataset_1obtest.pth')
 boundary_model = None
 if DRAW_DYNAMIC_BOUNDARY and os.path.exists(BOUNDARY_MODEL_PATH):
     boundary_model = SafetyNetwork().to(device)
@@ -598,7 +547,21 @@ def get_closest_box_distance(pos):
     for obs in ALL_OBSTACLES:
         d = np.abs(pos - obs["center"]) - obs["half_extents"]
         dists.append(np.linalg.norm(np.maximum(d, 0)) + np.minimum(np.max(d), 0))
-    return np.min(dists)
+    min_dist = np.min(dists)
+    closest_wall_idx = np.argmin(dists) # 找出是第几块墙
+    if min_dist < 0.5:
+        closest_obs = ALL_OBSTACLES[closest_wall_idx]
+        obs_c = closest_obs["center"]
+        obs_hw = closest_obs["half_extents"]
+        
+        # 墙的边界范围
+        r_min, r_max = obs_c[0] - obs_hw[0], obs_c[0] + obs_hw[0]
+        c_min, c_max = obs_c[1] - obs_hw[1], obs_c[1] + obs_hw[1]
+        
+        print(f"[测距] 小车(Row:{pos[0]:.2f}, Col:{pos[1]:.2f}) "
+              f"逼近墙#{closest_wall_idx} (Row:{r_min:.1f}~{r_max:.1f}, Col:{c_min:.1f}~{c_max:.1f}) "
+              f"| 实际距离 min_d = {min_dist:.3f}m")
+    return min_dist, closest_wall_idx
 
 for iter in range(num):   # num of testing runs
     print("step: ", iter, "/100")
@@ -652,35 +615,12 @@ for iter in range(num):   # num of testing runs
             sequence = samples.observations[0]
             if sequence.shape[0] > 0:
                 seq_pos = sequence[:, :2]
-                # dist_to_box = np.array([get_target_box_distance(p) for p in seq_pos])
-                dist_to_box = np.array([get_closest_box_distance(p) for p in seq_pos])
+                dist_to_box = np.array([get_closest_box_distance(p)[0] for p in seq_pos])
                 closest_idx = int(np.argmin(dist_to_box))
                 run_velocity = sequence[closest_idx, 2:4].copy()
             if BOUNDARY_VELOCITY_OVERRIDE is not None:
                 run_velocity = np.array(BOUNDARY_VELOCITY_OVERRIDE, dtype=np.float32)
             diffusion_paths = diffusion_paths[0]
-
-            # 动态边界只叠加到 all_runs_vis 中，不再单独输出 boundary_run 图
-
-            # # 添加了10次循环的保存的逻辑
-            # if iter == num - 1:
-            #     print("正在保存最后一次运行的可视化结果...")
-                
-            #     # 保存规划的轨迹图
-            #     fullpath = join(args.savepath, f'final_plan_{iter}.png')
-            #     renderer.composite(fullpath, samples.observations, ncol=1)
-                
-            #     # 保存视频
-            #     diffusion_sm = diffusion_paths
-            #     renderer.render_diffusion(join(args.savepath, f'final_diffusion.mp4'), diffusion_sm)
-
-            #     # 保存每一帧
-            #     diff_step = diffusion_sm.shape[0]  
-            #     png_dir = join(args.savepath, 'final_png_sequence')
-            #     makedirs(png_dir)
-            #     for kk in range(diff_step):
-            #         imgpath = join(png_dir, f'{kk}.png')
-            #         renderer.composite(imgpath, diffusion_sm[kk:kk+1], ncol=1)
 
         if t < len(sequence) - 1:
             next_waypoint = sequence[t+1]
@@ -697,8 +637,7 @@ for iter in range(num):   # num of testing runs
         # 碰撞检测
         pos_xy = next_observation[:2].copy() # 机器人的真实物理坐标
         
-        # min_d = get_target_box_distance(pos_xy)
-        min_d = get_closest_box_distance(pos_xy)
+        min_d, wall_idx = get_closest_box_distance(pos_xy)
 
         per_step_min_d.append(min_d)
         
@@ -709,6 +648,7 @@ for iter in range(num):   # num of testing runs
         if min_d < COLLISION_RADIUS:
             per_step_collisions.append(True)
             collided_flag = True
+            print(f"在第 {t} 步撞上了第 {wall_idx} 号墙")
         else:
             per_step_collisions.append(False)
 
@@ -724,51 +664,6 @@ for iter in range(num):   # num of testing runs
         observation = next_observation
 
 
-#     print(f"Iter {iter}: Score = {score}")
-
-
-#     # 如果当前分数比历史最高分高，或者这是第一次运行
-#     if score > best_score:
-#         print(f"🌟 发现更好的路径！分数从 {best_score} 提升到 {score}，正在保存...")
-#         best_score = score
-        
-#         # 保存这个最好的结果（覆盖写入，始终保留最好的）
-#         fullpath = join(args.savepath, 'best_plan.png')
-#         renderer.composite(fullpath, current_samples, ncol=1)
-        
-#         renderer.render_diffusion(join(args.savepath, 'best_diffusion.mp4'), current_trajectory)
-#         print("最佳结果已保存")
-
-# # 本轮总结
-#     is_success = False
-#     if reward > 0.95:
-#         success = success + 1
-#         is_success = True
-
-    
-    
-#     score_batch.append(score)
-
-#     # 打印本轮结果
-#     status_icon = "✅" if (is_success and not collided_flag) else "❌"
-#     print(f"{status_icon} [Round {iter+1}/{num}] "
-#           f"Goal: {is_success} | "
-#           f"Safe: {'✅' if not collided_flag else '❌'} | "
-#           f"MinDist: {min_dist_overall:.3f}m | "
-#           f"Score: {score:.4f}")
-
-#     # 保存单轮诊断数据
-#     makedirs(args.savepath)
-#     run_diag = {
-#         'run': int(iter),
-#         'reached_goal': bool(is_success),
-#         'collided': bool(collided_flag),
-#         'collision_steps': [int(i) for i, v in enumerate(per_step_collisions) if v] if len(per_step_collisions) > 0 else [],
-#         'min_distance_overall': float(min_dist_overall) if min_dist_overall != float('inf') else None,
-#         'score': float(score)
-#     }
-#     runs_summary.append(run_diag)
-
 # 1. 先判断本轮是否成功 (提到保存逻辑之前)
     is_success = False
     if reward > 0.95:
@@ -777,23 +672,7 @@ for iter in range(num):   # num of testing runs
     makedirs(all_runs_dir)
     status_str = "OK" if is_success else "FAIL"
     img_filename = f'run_{iter:03d}_{status_str}_score_{score:.2f}.png'
-    
-    # 保存图片 (current_samples 是扩散模型生成的规划路径)
-    # if DRAW_DYNAMIC_BOUNDARY and boundary_model is not None:
-    #     save_runs_with_boundary(
-    #         join(all_runs_dir, img_filename),
-    #         current_samples,
-    #         renderer,
-    #         args.dataset,
-    #         boundary_model,
-    #         run_velocity,
-    #         BOUNDARY_DOMAIN,
-    #         TARGET_CENTER,
-    #         HALF_EXTENTS,
-    #         ncol=1,
-    #     )
-    # else:
-    #     renderer.composite(join(all_runs_dir, img_filename), current_samples, ncol=1)
+
     if DRAW_DYNAMIC_BOUNDARY and boundary_model is not None:
         save_runs_with_boundary(
             join(all_runs_dir, img_filename),
@@ -810,7 +689,7 @@ for iter in range(num):   # num of testing runs
         renderer.composite(join(all_runs_dir, img_filename), current_samples, ncol=1)
 
     # 2. [核心修改] 保存逻辑：优先 Success，其次 Safety (MinDist)
-    # 逻辑：必须成功，且 (当前的最小距离 > 历史最好的最小距离)
+    # 必须成功，且 (当前的最小距离 > 历史最好的最小距离)
     if is_success:
         if min_dist_overall > best_safe_margin:
             print(f"发现更安全的成功路径！Run {iter}: MinDist 从 {best_safe_margin:.4f}m 提升到 {min_dist_overall:.4f}m (Score: {score:.4f})")
