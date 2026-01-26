@@ -426,28 +426,28 @@ BOUNDARY_VELOCITY_OVERRIDE = np.array([0.0, 0.0])  # 例如设置为 np.array([0
 print("正在配置全图障碍物与可视化...")
 
 # 1. 重新解析全图的墙壁 (用于画黄框)
-# MAZE_MAP_LARGE = [
-#     "OOOOOOOOOOOO",
-#     "OOOOO#OOOOOO",
-#     "OOOOO#O#OOOO",
-#     "OOOOOOO#OOOO",
-#     "OOOOO#O#OOOO",
-#     "OOOOO#OOOOOO",
-#     "OOOOO#OOOOOO",
-#     "OOOOOOOOOOOO",
-#     "OOOOOOOOOOOO",
-# ]
 MAZE_MAP_LARGE = [
     "OOOOOOOOOOOO",
-    "OOOOOOOOOOOO",
+    "OOOOO#OOOOOO",
+    "OOOOO#O#OOOO",
     "OOOOOOO#OOOO",
-    "OOOOOOO#OOOO",
-    "OOOOOOO#OOOO",
-    "OOOOOOOOOOOO",
-    "OOOOOOOOOOOO",
+    "OOOOO#O#OOOO",
+    "OOOOO#OOOOOO",
+    "OOOOO#OOOOOO",
     "OOOOOOOOOOOO",
     "OOOOOOOOOOOO",
 ]
+# MAZE_MAP_LARGE = [
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+# ]
 def parse_maze_map(map_lines):
     rows = len(map_lines); cols = len(map_lines[0])
     grid = np.array([[c == '#' for c in line] for line in map_lines], dtype=bool)
@@ -533,7 +533,7 @@ ALL_OBSTACLES = parse_maze_map(MAZE_MAP_LARGE)
 FULL_MAZE_DOMAIN = [(0.0, 12.0), (0.0, 10.0)] 
 
 DRAW_DYNAMIC_BOUNDARY = True
-BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_dataset_1obtest.pth')
+BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_dataset_3ge.pth')
 boundary_model = None
 if DRAW_DYNAMIC_BOUNDARY and os.path.exists(BOUNDARY_MODEL_PATH):
     boundary_model = SafetyNetwork().to(device)

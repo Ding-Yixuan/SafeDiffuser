@@ -8,28 +8,28 @@ import os
 USE_ABSOLUTE_INPUT = True
 
 # 用于打印验证（不参与推理）
-# MAZE_MAP_LARGE = [
-#     "OOOOOOOOOOOO",
-#     "OOOOO#OOOOOO",
-#     "OOOOO#O#OOOO",
-#     "OOOOOOO#OOOO",
-#     "OOOOO#O#OOOO",
-#     "OOOOO#OOOOOO",
-#     "OOOOO#OOOOOO",
-#     "OOOOOOOOOOOO",
-#     "OOOOOOOOOOOO",
-# ]
 MAZE_MAP_LARGE = [
     "OOOOOOOOOOOO",
-    "OOOOOOOOOOOO",
+    "OOOOO#OOOOOO",
+    "OOOOO#O#OOOO",
     "OOOOOOO#OOOO",
-    "OOOOOOO#OOOO",
-    "OOOOOOO#OOOO",
-    "OOOOOOOOOOOO",
-    "OOOOOOOOOOOO",
+    "OOOOO#O#OOOO",
+    "OOOOO#OOOOOO",
+    "OOOOO#OOOOOO",
     "OOOOOOOOOOOO",
     "OOOOOOOOOOOO",
 ]
+# MAZE_MAP_LARGE = [
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+# ]
 # ===========================================
 
 def parse_maze_map_to_obstacles(map_lines):
@@ -104,7 +104,7 @@ def parse_maze_map_to_obstacles(map_lines):
 # TARGET_OBSTACLE = torch.tensor([1.5, 5.0]) 
 
 # 模型文件名 (假设在同级目录或根目录)
-MODEL_FILENAME = "ttc_model_dataset_1obtest.pth"
+MODEL_FILENAME = "ttc_model_dataset_3ge.pth"
 # ===========================================
 
 class SafetyNetwork(nn.Module):
