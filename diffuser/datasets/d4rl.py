@@ -118,3 +118,36 @@ def process_maze2d_episode(episode):
         episode[key] = val[:-1]
     episode['next_observations'] = next_observations
     return episode
+
+import gym
+import d4rl
+
+# ==================== [新增：注册自定义迷宫] ====================
+from d4rl.pointmaze.maze_model import MazeEnv
+from gym.envs.registration import register
+
+CUSTOM_MAZE1 = \
+"#######\\" \
+"#OOOOO#\\" \
+"#O#OOO#\\" \
+"#OOOOO#\\" \
+"#OOO#O#\\" \
+"#OOO#G#\\" \
+"#######"
+
+# 检查是否已经注册过，防止重复运行报错
+if 'maze2d-custom-v1' not in gym.envs.registry.env_specs:
+    register(
+        id='maze2d-custom-v1',
+        entry_point='d4rl.pointmaze:MazeEnv',
+        max_episode_steps=450,
+        kwargs={
+            'maze_spec': CUSTOM_MAZE1,
+            'reward_type': 'dense',
+            'reset_target': False,
+            'ref_min_score': 0.0,
+            'ref_max_score': 1,
+            # 指向你刚刚放进去的本地文件
+            'dataset_url': 'maze2d-custom-v1-dense.hdf5' 
+        }
+    )

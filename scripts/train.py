@@ -1,3 +1,7 @@
+'''
+PYTHONPATH=. python scripts/train.py --config config.maze2d --dataset maze2d-custom-v1
+'''
+
 import diffuser.utils as utils
 import pdb
 

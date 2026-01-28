@@ -130,3 +130,14 @@ maze2d_large_v1 = {
         'n_diffusion_steps': 256,  # 256 debug
     },
 }
+
+maze2d_custom_v1 = {
+    'diffusion': {
+        'horizon': 256,
+        'n_diffusion_steps': 128,
+    },
+    'plan': {
+        'horizon': 256,
+        'n_diffusion_steps': 128,
+    },
+}

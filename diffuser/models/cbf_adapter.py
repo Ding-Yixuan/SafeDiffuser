@@ -8,17 +8,17 @@ import os
 USE_ABSOLUTE_INPUT = True
 
 # 用于打印验证（不参与推理）
-MAZE_MAP_LARGE = [
-    "OOOOOOOOOOOO",
-    "OOOOO#OOOOOO",
-    "OOOOO#O#OOOO",
-    "OOOOOOO#OOOO",
-    "OOOOO#O#OOOO",
-    "OOOOO#OOOOOO",
-    "OOOOO#OOOOOO",
-    "OOOOOOOOOOOO",
-    "OOOOOOOOOOOO",
-]
+# MAZE_MAP_LARGE = [
+#     "OOOOOOOOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+# ]
 # MAZE_MAP_LARGE = [
 #     "OOOOOOOOOOOO",
 #     "OOOOOOOOOOOO",
@@ -30,6 +30,26 @@ MAZE_MAP_LARGE = [
 #     "OOOOOOOOOOOO",
 #     "OOOOOOOOOOOO",
 # ]
+# MAZE_MAP_LARGE = [
+#     "OOOOOOOOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+# ]
+MAZE_MAP_LARGE = [
+    "OOOOOOO",
+    "OOOOOOO",
+    "OO#OOOO",
+    "OOOOOOO",
+    "OOOO#OO",
+    "OOOO#OO",
+    "OOOOOOO"
+]
 # ===========================================
 
 def parse_maze_map_to_obstacles(map_lines):
@@ -104,7 +124,7 @@ def parse_maze_map_to_obstacles(map_lines):
 # TARGET_OBSTACLE = torch.tensor([1.5, 5.0]) 
 
 # 模型文件名 (假设在同级目录或根目录)
-MODEL_FILENAME = "ttc_model_dataset_3ge.pth"
+MODEL_FILENAME = "ttc_model_small_2ob.pth"
 # ===========================================
 
 class SafetyNetwork(nn.Module):
@@ -178,14 +198,7 @@ class NeuralBarrierAdapter:
             if USE_ABSOLUTE_INPUT:
                 net_input = x_in[:, :4]
             else:
-                # # 这里保留相对坐标的计算，以备将来扩展
-                # pos = x_in[:, :2]
-                # vel = x_in[:, 2:4]
-                
-                # # 坐标变换 (绝对 -> 相对)
-                # rel_pos = pos - self.center
-                # net_input = torch.cat([rel_pos, vel], dim=1)
-                raise ValueError("相对坐标模式未实现，需启用 USE_ABSOLUTE_INPUT=True")
+                raise ValueError("需启用 USE_ABSOLUTE_INPUT=True")
 
             h_val = self.model(net_input)
 

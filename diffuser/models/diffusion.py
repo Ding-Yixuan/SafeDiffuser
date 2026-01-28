@@ -239,8 +239,8 @@ class GaussianDiffusion(nn.Module):
         # 读取 Threshold (警戒线)
         # threshold = config.get('threshold', 0.05)
         alpha = config.get('alpha', 0.05) 
-        clip_value = config.get('clip', 0.2)
-        threshold = config.get('threshold', 0.5)
+        clip_value = config.get('clip', 0.01)
+        threshold = config.get('threshold', 0)
         # 1. 准备数据
         original_shape = xp1.shape
         xp1_flat = xp1.view(-1, xp1.shape[-1])
@@ -365,11 +365,11 @@ class GaussianDiffusion(nn.Module):
         # x = self.GD(x, xp1)
 
         ####################### SafeDiffusers 
-        # x = xp1 # for training only
+        x = xp1 # for training only
         # x = self.invariance(x, xp1)    # RoS
         # x = self.invariance_cf(x, xp1)  # RoS closed form
 
-        x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
+        # x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
 
         # x = self.invariance_relax(x, xp1, t) # ReS
         # x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    

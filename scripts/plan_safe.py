@@ -1,3 +1,11 @@
+'''
+PYTHONPATH=. python scripts/plan_safe.py \
+    --config config.maze2d \
+    --dataset maze2d-custom-v1 \
+    --horizon 256 \
+    --n_diffusion_steps 128 \
+    --diffusion_epoch 0
+'''
 # python scripts/plan_maze2d.py --config config.maze2d --dataset maze2d-large-v1
 import os
 os.environ["EINOPS_BACKEND"] = "torch"
@@ -44,7 +52,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 #---------------------------------- setup ----------------------------------#
 
 args = Parser().parse_args('plan')
-
+print(f"\n📁 === 结果将保存在这里: {args.savepath} ===\n")
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 env = datasets.load_environment(args.dataset)
@@ -58,7 +66,7 @@ dataset = diffusion_experiment.dataset
 renderer = diffusion_experiment.renderer
 
 ## enable CBF
-USE_CBF = True
+USE_CBF = False
 if USE_CBF:
     print("\n启动 CBF (Neural Barrier)")
     
@@ -426,17 +434,17 @@ BOUNDARY_VELOCITY_OVERRIDE = np.array([0.0, 0.0])  # 例如设置为 np.array([0
 print("正在配置全图障碍物与可视化...")
 
 # 1. 重新解析全图的墙壁 (用于画黄框)
-MAZE_MAP_LARGE = [
-    "OOOOOOOOOOOO",
-    "OOOOO#OOOOOO",
-    "OOOOO#O#OOOO",
-    "OOOOOOO#OOOO",
-    "OOOOO#O#OOOO",
-    "OOOOO#OOOOOO",
-    "OOOOO#OOOOOO",
-    "OOOOOOOOOOOO",
-    "OOOOOOOOOOOO",
-]
+# MAZE_MAP_LARGE = [
+#     "OOOOOOOOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+# ]
 # MAZE_MAP_LARGE = [
 #     "OOOOOOOOOOOO",
 #     "OOOOOOOOOOOO",
@@ -448,6 +456,28 @@ MAZE_MAP_LARGE = [
 #     "OOOOOOOOOOOO",
 #     "OOOOOOOOOOOO",
 # ]
+
+# MAZE_MAP_LARGE = [
+#     "OOOOOOOOOOOO",
+#     "OOOOO#OOOOOO",
+#     "OOOOO#O#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOOOO#OOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+#     "OOOOOOOOOOOO",
+# ]
+
+MAZE_MAP_LARGE = [
+    "OOOOOOO",
+    "OOOOOOO",
+    "OO#OOOO",
+    "OOOOOOO",
+    "OOOO#OO",
+    "OOOO#OO",
+    "OOOOOOO"
+]
 def parse_maze_map(map_lines):
     rows = len(map_lines); cols = len(map_lines[0])
     grid = np.array([[c == '#' for c in line] for line in map_lines], dtype=bool)
@@ -533,7 +563,7 @@ ALL_OBSTACLES = parse_maze_map(MAZE_MAP_LARGE)
 FULL_MAZE_DOMAIN = [(0.0, 12.0), (0.0, 10.0)] 
 
 DRAW_DYNAMIC_BOUNDARY = True
-BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_dataset_3ge.pth')
+BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_small_2ob.pth')
 boundary_model = None
 if DRAW_DYNAMIC_BOUNDARY and os.path.exists(BOUNDARY_MODEL_PATH):
     boundary_model = SafetyNetwork().to(device)
@@ -567,7 +597,7 @@ for iter in range(num):   # num of testing runs
     print("step: ", iter, "/100")
 
     observation = env.reset()    #array([ 0.94875744,  8.93648809, -0.01347715,  0.06358764])
-    observation = np.array([ 0.94875744,  2.93648809, -0.01347715,  0.06358764])   # fix the initial position and final destination for comparison (not needed for general testing)
+    observation = np.array([ 2,  1, -0.01347715,  0.06358764])   # fix the initial position and final destination for comparison (not needed for general testing)
     env.set_state(observation[0:2], observation[2:4]) ############################################################ same as the last line
     run_velocity = observation[2:4].copy()
 
@@ -668,7 +698,7 @@ for iter in range(num):   # num of testing runs
     is_success = False
     if reward > 0.95:
         is_success = True
-    all_runs_dir = join(args.savepath, 'all_runs_vis')
+    all_runs_dir = join(args.savepath, 'all_runs_vis_small')
     makedirs(all_runs_dir)
     status_str = "OK" if is_success else "FAIL"
     img_filename = f'run_{iter:03d}_{status_str}_score_{score:.2f}.png'

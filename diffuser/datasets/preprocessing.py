@@ -56,36 +56,102 @@ def add_deltas(env):
     return _fn
 
 
+# def maze2d_set_terminals(env):
+#     env = load_environment(env) if type(env) == str else env
+#     goal = np.array(env._target)
+#     threshold = 0.5
+
+#     def _fn(dataset):
+#         xy = dataset['observations'][:,:2]
+#         distances = np.linalg.norm(xy - goal, axis=-1)
+#         at_goal = distances < threshold
+#         timeouts = np.zeros_like(dataset['timeouts'])
+
+#         ## timeout at time t iff
+#         ##      at goal at time t and
+#         ##      not at goal at time t + 1
+#         timeouts[:-1] = at_goal[:-1] * ~at_goal[1:]
+
+#         timeout_steps = np.where(timeouts)[0]
+#         path_lengths = timeout_steps[1:] - timeout_steps[:-1]
+
+#         print(
+#             f'[ utils/preprocessing ] Segmented {env.name} | {len(path_lengths)} paths | '
+#             f'min length: {path_lengths.min()} | max length: {path_lengths.max()}'
+#         )
+
+#         dataset['timeouts'] = timeouts
+#         return dataset
+
+#     return _fn
+
+# def maze2d_set_terminals(env):
+#     # 确保加载了正确的环境对象
+#     env = load_environment(env) if type(env) == str else env
+    
+#     goal = np.array(env._target)
+#     threshold = 0.5
+
+#     def _fn(dataset):
+#         xy = dataset['observations'][:,:2]
+#         distances = np.linalg.norm(xy - goal, axis=-1)
+#         at_goal = distances < threshold
+        
+#         # ==================== [核心修改：容错处理] ====================
+#         # 尝试读取 'timeouts'，如果没有，就根据观测数据长度创建一个全零的
+#         if 'timeouts' in dataset:
+#             timeouts = np.zeros_like(dataset['timeouts'])
+#         else:
+#             # print("[ utils/preprocessing ] Warning: 'timeouts' not found in dataset, creating empty one.")
+#             timeouts = np.zeros(len(dataset['observations']), dtype=bool)
+#         # ==========================================================
+
+#         ## timeout at time t iff
+#         ##      at goal at time t and
+#         ##      not at goal at time t + 1
+#         timeouts[:-1] = at_goal[:-1] * ~at_goal[1:]
+
+#         # 统计路径信息（防止空数据报错）
+#         timeout_steps = np.where(timeouts)[0]
+#         if len(timeout_steps) > 1:
+#             path_lengths = timeout_steps[1:] - timeout_steps[:-1]
+#             print(
+#                 f'[ utils/preprocessing ] Segmented {env.name} | {len(path_lengths)} paths | '
+#                 f'min length: {path_lengths.min()} | max length: {path_lengths.max()}'
+#             )
+#         else:
+#             print(f'[ utils/preprocessing ] Segmented {env.name} | No valid segments found based on goal.')
+
+#         dataset['timeouts'] = timeouts
+#         return dataset
+
+#     return _fn
+
 def maze2d_set_terminals(env):
-    env = load_environment(env) if type(env) == str else env
-    goal = np.array(env._target)
-    threshold = 0.5
-
+    """
+    这个版本专为自定义数据集设计。
+    它完全信任生成脚本写入的 'timeouts'，不做任何覆盖。
+    """
     def _fn(dataset):
-        xy = dataset['observations'][:,:2]
-        distances = np.linalg.norm(xy - goal, axis=-1)
-        at_goal = distances < threshold
-        timeouts = np.zeros_like(dataset['timeouts'])
+        # 1. 检查 dataset 字典里到底有没有 timeouts
+        if 'timeouts' in dataset:
+            # 如果有，强制转换为布尔类型 (防止浮点数问题)
+            dataset['timeouts'] = dataset['timeouts'].astype(bool)
+            
+            # 打印统计信息，让你放心
+            timeout_count = dataset['timeouts'].sum()
+            print(f"[ utils/preprocessing ] ✅ Used existing timeouts. Count: {timeout_count}")
+            
+        else:
+            # 2. 只有在真的读不到的时候，才进行兜底
+            # 这种情况下，我们假设没有超时（变成一条无限长的轨迹），防止报错
+            print(f"[ utils/preprocessing ] ⚠️ Warning: 'timeouts' key missing! Creating dummy False array.")
+            N = len(dataset['observations'])
+            dataset['timeouts'] = np.zeros(N, dtype=bool)
 
-        ## timeout at time t iff
-        ##      at goal at time t and
-        ##      not at goal at time t + 1
-        timeouts[:-1] = at_goal[:-1] * ~at_goal[1:]
-
-        timeout_steps = np.where(timeouts)[0]
-        path_lengths = timeout_steps[1:] - timeout_steps[:-1]
-
-        print(
-            f'[ utils/preprocessing ] Segmented {env.name} | {len(path_lengths)} paths | '
-            f'min length: {path_lengths.min()} | max length: {path_lengths.max()}'
-        )
-
-        dataset['timeouts'] = timeouts
         return dataset
 
     return _fn
-
-
 #-------------------------- block-stacking --------------------------#
 
 def blocks_quat_to_euler(observations):
