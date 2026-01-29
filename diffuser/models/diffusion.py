@@ -219,7 +219,7 @@ class GaussianDiffusion(nn.Module):
             assert RuntimeError()
 
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(
-                x_start=x_recon, x_t=x, t=t)
+            x_start=x_recon, x_t=x, t=t)
         return model_mean, posterior_variance, posterior_log_variance
     
 
@@ -471,20 +471,57 @@ class GaussianDiffusion(nn.Module):
     def p_losses(self, x_start, cond, t):
         noise = torch.randn_like(x_start)
 
+        # 1. 加噪 (Forward Diffusion)
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         x_noisy = apply_conditioning(x_noisy, cond, self.action_dim)
 
-        x_recon = self.model(x_noisy, cond, t)
-        x_recon = apply_conditioning(x_recon, cond, self.action_dim)
+        # 2. 模型预测 (Model Prediction)
+        model_out = self.model(x_noisy, cond, t)
+        model_out = apply_conditioning(model_out, cond, self.action_dim)
 
-        assert noise.shape == x_recon.shape
-
+        # 3. 计算原始 Diffusion Loss
         if self.predict_epsilon:
-            loss, info = self.loss_fn(x_recon, noise)
+            loss_diff, info = self.loss_fn(model_out, noise)
         else:
-            loss, info = self.loss_fn(x_recon, x_start)
+            loss_diff, info = self.loss_fn(model_out, x_start)
 
-        return loss, info
+        # 4. 计算 Safety Loss
+        loss_barrier = torch.tensor(0.0, device=x_start.device)
+        if hasattr(self, 'neural_cbf') and self.neural_cbf is not None:
+            x_0_pred = self.predict_start_from_noise(x_t=x_noisy, t=t, noise=model_out)
+            B, H, D = x_0_pred.shape
+            flat_x0 = x_0_pred.reshape(-1, D)
+
+            obs_start = self.action_dim
+            norm_pos = flat_x0[:, obs_start:obs_start + 2]
+            norm_vel = flat_x0[:, obs_start + 2:obs_start + 4]
+
+            if not isinstance(self.norm_mins, torch.Tensor):
+                dev = x_start.device
+                self.norm_mins_t = torch.tensor(self.norm_mins, device=dev, dtype=torch.float32)
+                self.norm_maxs_t = torch.tensor(self.norm_maxs, device=dev, dtype=torch.float32)
+            else:
+                self.norm_mins_t = self.norm_mins
+                self.norm_maxs_t = self.norm_maxs
+
+            if self.norm_mins_t.numel() >= obs_start + self.observation_dim:
+                obs_mins = self.norm_mins_t[obs_start:obs_start + self.observation_dim]
+                obs_maxs = self.norm_maxs_t[obs_start:obs_start + self.observation_dim]
+            else:
+                obs_mins = self.norm_mins_t
+                obs_maxs = self.norm_maxs_t
+
+            width = obs_maxs - obs_mins
+            norm_state = torch.cat([norm_pos, norm_vel], dim=1)
+            phys_state = (norm_state + 1) / 2 * width[:4] + obs_mins[:4]
+
+            h_val = self.neural_cbf.model(phys_state)
+            safety_threshold = 0.05
+            violation = torch.relu(safety_threshold - h_val)
+            loss_barrier = torch.mean(violation)
+            info['loss_barrier'] = loss_barrier.item()
+
+        return loss_diff, loss_barrier, info
 
     def loss(self, x, cond):
         batch_size = len(x)

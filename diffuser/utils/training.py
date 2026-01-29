@@ -88,6 +88,19 @@ class Trainer(object):
         self.reset_parameters()
         self.step = 0
 
+        # --- Lagrangian / CBF setup ---
+        self.nu_lr = 1e-3
+        if hasattr(self.model, 'neural_cbf') and self.model.neural_cbf is not None:
+            print("[SafeDiffuser] Detected Neural CBF adapter.")
+            self.nu = torch.tensor(0.01, device=self.model.betas.device, requires_grad=True)
+            self.model.neural_cbf.model.eval()
+            for p in self.model.neural_cbf.model.parameters():
+                p.requires_grad = False
+            print("[SafeDiffuser] CBF weights frozen. Lagrangian training enabled.")
+        else:
+            self.nu = None
+            print("[SafeDiffuser] No CBF adapter found. Standard training.")
+
     def reset_parameters(self):
         self.ema_model.load_state_dict(self.model.state_dict())
 
@@ -105,16 +118,34 @@ class Trainer(object):
 
         timer = Timer()
         for step in range(n_train_steps):
+            total_diff_loss = 0.0
+            total_barrier_loss = 0.0
+
             for i in range(self.gradient_accumulate_every):
                 batch = next(self.dataloader)
                 batch = batch_to_device(batch)
 
-                loss, infos = self.model.loss(*batch)
+                loss_diff, loss_barrier, infos = self.model.loss(*batch)
+
+                if self.nu is not None:
+                    loss = loss_diff + self.nu.detach() * loss_barrier
+                else:
+                    loss = loss_diff
+
                 loss = loss / self.gradient_accumulate_every
                 loss.backward()
 
+                total_diff_loss += loss_diff.item()
+                total_barrier_loss += loss_barrier.item()
+
             self.optimizer.step()
             self.optimizer.zero_grad()
+
+            if self.nu is not None:
+                with torch.no_grad():
+                    avg_barrier = total_barrier_loss / self.gradient_accumulate_every
+                    self.nu.data += self.nu_lr * avg_barrier
+                    self.nu.data = torch.max(self.nu.data, torch.tensor(1e-5, device=self.nu.device))
 
             if self.step % self.update_ema_every == 0:
                 self.step_ema()
@@ -125,7 +156,8 @@ class Trainer(object):
 
             if self.step % self.log_freq == 0:
                 infos_str = ' | '.join([f'{key}: {val:8.4f}' for key, val in infos.items()])
-                print(f'{self.step}: {loss:8.4f} | {infos_str} | t: {timer():8.4f}')
+                nu_val = self.nu.item() if self.nu is not None else 0.0
+                print(f'{self.step}: Diff={total_diff_loss:8.4f} | Barrier={total_barrier_loss:8.4f} | nu={nu_val:8.4f} | {infos_str} | t: {timer():8.4f}')
 
             if self.step == 0 and self.sample_freq:
                 self.render_reference(self.n_reference)

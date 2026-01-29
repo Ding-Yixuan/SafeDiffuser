@@ -4,6 +4,7 @@ PYTHONPATH=. python scripts/train.py --config config.maze2d --dataset maze2d-cus
 
 import diffuser.utils as utils
 import pdb
+import numpy as np
 
 #export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia-515
 #export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/wei/.mujoco/mujoco200/bin
@@ -106,6 +107,33 @@ model = model_config()
 
 diffusion = diffusion_config(model)
 
+if hasattr(dataset, 'normalizer'):
+    print(f"\n[SafeDiffuser] Injecting normalizer limits into Diffusion model...")
+    
+    # 尝试从管理器中提取 'observations' 的归一化器
+    # DatasetNormalizer 通常有一个 .normalizers 字典
+    if hasattr(dataset.normalizer, 'normalizers') and 'observations' in dataset.normalizer.normalizers:
+        obs_norm = dataset.normalizer.normalizers['observations']
+        diffusion.norm_mins = obs_norm.mins
+        diffusion.norm_maxs = obs_norm.maxs
+    
+    # 如果它本身就是 LimitsNormalizer (备用逻辑)
+    elif hasattr(dataset.normalizer, 'mins'):
+        diffusion.norm_mins = dataset.normalizer.mins
+        diffusion.norm_maxs = dataset.normalizer.maxs
+        
+    else:
+        print("⚠️ Warning: Could not find 'mins' in normalizer. Safety Loss may fail!")
+        print(f"   Available attributes: {dir(dataset.normalizer)}")
+
+    # 打印确认一下 (如果是 tensor 就打印 shape，如果是 numpy 就直接打印)
+    if isinstance(diffusion.norm_mins, (np.ndarray, list)):
+        print(f"   mins: {diffusion.norm_mins}")
+        print(f"   maxs: {diffusion.norm_maxs}\n")
+    else:
+        print(f"   mins (tensor): {diffusion.norm_mins}")
+        print(f"   maxs (tensor): {diffusion.norm_maxs}\n")
+
 trainer = trainer_config(diffusion, dataset, renderer)
 
 
@@ -115,12 +143,19 @@ trainer = trainer_config(diffusion, dataset, renderer)
 
 utils.report_parameters(model)
 
+# print('Testing forward...', end=' ', flush=True)
+# batch = utils.batchify(dataset[0])
+# loss, _ = diffusion.loss(*batch)
+# loss.backward()
+# print('✓')
 print('Testing forward...', end=' ', flush=True)
 batch = utils.batchify(dataset[0])
-loss, _ = diffusion.loss(*batch)
+
+# 适应新的3返回值 (diff, barrier, info)
+loss_diff, loss_barrier, _ = diffusion.loss(*batch)
+loss = loss_diff + loss_barrier  # 简单加和测一下反向传播
 loss.backward()
 print('✓')
-
 
 #-----------------------------------------------------------------------------#
 #--------------------------------- main loop ---------------------------------#

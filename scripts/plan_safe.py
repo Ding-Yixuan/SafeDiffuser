@@ -588,9 +588,9 @@ def get_closest_box_distance(pos):
         r_min, r_max = obs_c[0] - obs_hw[0], obs_c[0] + obs_hw[0]
         c_min, c_max = obs_c[1] - obs_hw[1], obs_c[1] + obs_hw[1]
         
-        print(f"[测距] 小车(Row:{pos[0]:.2f}, Col:{pos[1]:.2f}) "
-              f"逼近墙#{closest_wall_idx} (Row:{r_min:.1f}~{r_max:.1f}, Col:{c_min:.1f}~{c_max:.1f}) "
-              f"| 实际距离 min_d = {min_dist:.3f}m")
+        # print(f"[测距] 小车(Row:{pos[0]:.2f}, Col:{pos[1]:.2f}) "
+        #       f"逼近墙#{closest_wall_idx} (Row:{r_min:.1f}~{r_max:.1f}, Col:{c_min:.1f}~{c_max:.1f}) "
+        #       f"| 实际距离 min_d = {min_dist:.3f}m")
     return min_dist, closest_wall_idx
 
 for iter in range(num):   # num of testing runs
