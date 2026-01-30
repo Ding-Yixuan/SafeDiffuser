@@ -294,7 +294,7 @@ class GaussianDiffusion(nn.Module):
         off_x = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
         # 3. CBF 计算 (Quartic: ^4) - 近似矩形
-        b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 - 0.05 # robust term
+        b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1  # robust term
         Lfb = 0
         Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
         Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
@@ -361,7 +361,7 @@ class GaussianDiffusion(nn.Module):
         off_x = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
         # 3. CBF 计算 (Quadratic: ^2)
-        b0 = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1    # robust term increased
+        b0 = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1 - 0.05  # robust term increased
         Lfb = 0
         Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
         Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
@@ -402,7 +402,7 @@ class GaussianDiffusion(nn.Module):
         off_x = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
         # 3. CBF 计算 (Quartic: ^4) - 近似矩形
-        b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 # robust term
+        b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 - 0.05 # robust term
         Lfb = 0
         Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
         Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
@@ -584,14 +584,14 @@ class GaussianDiffusion(nn.Module):
         # x = self.GD(x, xp1)
 
         ####################### SafeDiffusers 
-        x = xp1 # for training only
+        # x = xp1 # for training only
         # x = self.invariance(x, xp1)    # RoS
         # x = self.invariance_cf(x, xp1)  # RoS closed form
 
         # x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
 
         # x = self.invariance_relax(x, xp1, t) # ReS
-        # x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    
+        x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    
         # x = self.invariance_time(x, xp1, t)   # TVS
         # x = self.invariance_time_cf(x, xp1, t)  # TVS closed form
         # x = self.invariance_relax_narrow(x, xp1, t)  # narrow passage case
@@ -756,3 +756,4 @@ class GaussianDiffusion(nn.Module):
 
     def forward(self, cond, *args, **kwargs):
         return self.conditional_sample(cond=cond, *args, **kwargs)
+

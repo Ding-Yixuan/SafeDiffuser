@@ -1,3 +1,4 @@
+
 '''
 PYTHONPATH=. python scripts/plan_safe.py \
     --config config.maze2d \
@@ -7,6 +8,8 @@ PYTHONPATH=. python scripts/plan_safe.py \
     --diffusion_epoch 0
 '''
 # python scripts/plan_maze2d.py --config config.maze2d --dataset maze2d-large-v1
+import pickle
+import argparse
 import os
 os.environ["EINOPS_BACKEND"] = "torch"
 import einops
@@ -407,29 +410,6 @@ runs_summary = []
 # BOUNDARY_DOMAIN = get_boundary_domain(TARGET_CENTER, HALF_EXTENTS, padding=2.0)
 BOUNDARY_VELOCITY_OVERRIDE = np.array([0.0, 0.0])  # 例如设置为 np.array([0.0, 0.0])
 
-# DRAW_DYNAMIC_BOUNDARY = True
-# BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_dataset.pth')
-# boundary_model = None
-# if DRAW_DYNAMIC_BOUNDARY:
-#     if os.path.exists(BOUNDARY_MODEL_PATH):
-#         boundary_model = SafetyNetwork().to(device)
-#         boundary_model.load_state_dict(torch.load(BOUNDARY_MODEL_PATH, map_location=device))
-#         boundary_model.eval()
-#         print(f"动态安全边界模型已加载: {BOUNDARY_MODEL_PATH}")
-#     else:
-#         print(f"未找到动态边界模型，已跳过: {BOUNDARY_MODEL_PATH}")
-#         DRAW_DYNAMIC_BOUNDARY = False
-
-# def get_target_box_distance(pos):
-#     """计算机器人到目标矩形表面的最短距离"""
-#     rel_pos = pos - TARGET_CENTER
-#     d = np.abs(rel_pos) - HALF_EXTENTS
-#     # 外部距离
-#     outside_dist = np.linalg.norm(np.maximum(d, 0))
-#     # 内部距离 (撞进去了就是负数)
-#     inside_dist = np.minimum(np.max(d), 0)
-#     return outside_dist + inside_dist
-
 print("正在配置全图障碍物与可视化...")
 
 # 1. 重新解析全图的墙壁 (用于画黄框)
@@ -684,8 +664,8 @@ def generate_test_cases(num_cases, seed=42):
     cases = []
     while len(cases) < num_cases:
         # 随机采样 [0.5, 6.5] 范围内的点
-        start = np.random.uniform(0.5, 6.5, 2)
-        goal = np.random.uniform(0.5, 6.5, 2)
+        start = np.random.uniform(1, 6, 2)
+        goal = np.random.uniform(1, 6, 2)
         
         # 验证有效性
         if is_valid_point(start) and is_valid_point(goal) and np.linalg.norm(start - goal) > 3.0:
@@ -694,9 +674,6 @@ def generate_test_cases(num_cases, seed=42):
 
 # ==============================================================================
 # 2. 配置实验循环
-# ==============================================================================
-# ==============================================================================
-# 2. 定制化实验配置 (更严格的校验版)
 # ==============================================================================
 
 # 1. 设定基准测试点
@@ -712,7 +689,7 @@ def is_valid_point(pos):
     
     # 🤖 小车物理半径缓冲 (安全气囊)
     # 车身半径 0.1 + 额外安全余量 0.1 = 0.2
-    ROBOT_PADDING = 0 
+    ROBOT_PADDING = 0.2 
     
     # 1. 检查地图边界 (0.0 ~ 7.0)
     # 确保不贴着地图最外圈的墙
@@ -735,7 +712,7 @@ def is_valid_point(pos):
             
     return True
 
-def generate_custom_cases(num_neighbors=5, seed=2025):
+def generate_custom_cases(num_neighbors=5, seed=2024):
     """生成基准点和周边随机点，保证绝对安全"""
     np.random.seed(seed)
     cases = []
@@ -784,20 +761,10 @@ REPEATS_PER_CASE = 10  # 每个 Case 跑 10 次
 test_cases = generate_custom_cases(num_neighbors=5) # 1个基准 + 5个周边 = 6个 Case
 NUM_CASES = len(test_cases)
 TOTAL_RUNS = NUM_CASES * REPEATS_PER_CASE
-
+all_raw_results = []
 print(f"\n🚀 开始评测: 共 {NUM_CASES} 组路径, 每组重复 {REPEATS_PER_CASE} 次, 总计 {TOTAL_RUNS} 次运行")
 
-# ... (后面的循环逻辑不用变，直接复用之前的代码即可) ...
-# NUM_CASES = 10        # 想要多少组不同的起点终点，改成 10, 20, 50 等
-# REPEATS_PER_CASE = 3 # 每组重复几次，保持 10 次以测试稳定性
-# TOTAL_RUNS = NUM_CASES * REPEATS_PER_CASE
-
-# # 生成固定的考题 (Seed 2024 保证每次运行生成的测试用例一致，方便对比)
-# test_cases = generate_test_cases(NUM_CASES, seed=2024) 
-
-# print(f"\n🚀 开始评测: 共 {NUM_CASES} 组路径, 每组重复 {REPEATS_PER_CASE} 次, 总计 {TOTAL_RUNS} 次运行")
-
-all_run_images = []
+# all_run_images = []
 # 全局计数器
 global_iter = 0
 success = 0
@@ -953,17 +920,17 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
             # 这里保持原逻辑，画 current_samples (模型规划出的轨迹)
             renderer.composite(save_path_full, current_samples, ncol=1)
 
-        try:
-            # 直接读取刚刚保存好的这一张图
-            img_data = imageio.imread(save_path_full)
+        # try:
+        #     # 直接读取刚刚保存好的这一张图
+        #     img_data = imageio.imread(save_path_full)
             
-            # 确保图片没有 Alpha 通道 (如果是4通道转3通道，防止拼接报错)
-            if img_data.shape[-1] == 4:
-                img_data = img_data[..., :3]
+        #     # 确保图片没有 Alpha 通道 (如果是4通道转3通道，防止拼接报错)
+        #     if img_data.shape[-1] == 4:
+        #         img_data = img_data[..., :3]
                 
-            all_run_images.append(img_data)
-        except Exception as e:
-            print(f"⚠️ 收集拼图失败: {e}")
+        #     all_run_images.append(img_data)
+        # except Exception as e:
+        #     print(f"⚠️ 收集拼图失败: {e}")
 
         # 3. 保存最佳安全结果 (全局最佳)
         if is_success:
@@ -995,6 +962,43 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
         
         print(f"Result [Round {global_iter}/{TOTAL_RUNS}] Goal: {goal_icon} | Safe: {safe_icon} | MinDist: {min_dist_overall:.3f}m | Score: {score:.4f}")
 
+        # ==================== [新增] 数据收集核心逻辑 ====================
+        
+        # 1. 计算轨迹长度 (Path Length)
+        # rollout 是 list of arrays, 先转成 (T, 4) 的 numpy array
+        traj_stack = np.stack(rollout) 
+        # 只取 XY 坐标 (T, 2)
+        traj_xy = traj_stack[:, :2]
+        # 计算每一步的位移向量: s_{t+1} - s_t
+        diffs = traj_xy[1:] - traj_xy[:-1]
+        # 计算每一步的欧氏距离
+        dists = np.linalg.norm(diffs, axis=1)
+        # 求和得到整条轨迹长度
+        path_length = np.sum(dists)
+
+        # 2. 计算碰撞步数 (Collision Steps)
+        # per_step_collisions 是一个 [False, False, True, ...] 的 list
+        # sum(True) 就是 1，sum(False) 是 0
+        n_collision_steps = sum(per_step_collisions)
+
+        # 3. 组装单次运行的数据包 (Dict)
+        run_data = {
+            'algorithm': "SafeDiffuser_Hard", # <--- ⚠️ 记得每次换算法跑的时候改这个名字！
+            'case_idx': case_idx,
+            'run_idx': run_idx,
+            'start_point': start_pos,
+            'goal_point': goal_pos,
+            'is_collision': 1 if collided_flag else 0, # 指标1: 是否碰撞 (0/1)
+            'collision_steps': n_collision_steps,      # 指标2: 碰撞步数
+            'path_length': path_length,                # 指标3: 轨迹长度
+            'is_success': 1 if is_success else 0,
+            'score': score,
+            # 'trajectory': traj_xy  # <--- 如果硬盘够大，强烈建议把原始轨迹也存下来，方便以后画图！
+        }
+        
+        all_raw_results.append(run_data)
+        # ==================================================================
+
         # 保存单轮诊断数据
         makedirs(args.savepath) # 确保 savepath 存在
         run_diag = {
@@ -1009,6 +1013,8 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
         }
         runs_summary.append(run_diag)
 
+
+# ==================== 【修改】生成 Case x Repeat 的矩阵拼图 ====================
 # print("\n正在生成最终汇总拼图...")
 # if len(all_run_images) > 0:
 #     import einops
@@ -1016,93 +1022,57 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
 #     # 1. 堆叠成 numpy 数组 (Total, H, W, C)
 #     stack_imgs = np.stack(all_run_images) 
     
-#     # 2. 设定列数 (3个一行)
-#     N_COLS = 3  
-#     # 自动计算行数 (例如 30张图 / 3列 = 10行)
-#     N_ROWS = int(np.ceil(len(stack_imgs) / N_COLS))
+#     # 2. 动态设定行列
+#     # 行数 = 你的 Case 数量 (6)
+#     # 列数 = 你的重复次数 (10)
+#     # 注意：这两个变量应该在你的脚本开头定义过
+#     target_rows = NUM_CASES        
+#     target_cols = REPEATS_PER_CASE 
     
-#     # *可选*: 如果图片总数不是3的倍数，补黑帧防止报错
-#     pad_num = N_ROWS * N_COLS - len(stack_imgs)
-#     if pad_num > 0:
-#         padding = np.zeros((pad_num, *stack_imgs.shape[1:]), dtype=stack_imgs.dtype)
-#         stack_imgs = np.concatenate([stack_imgs, padding], axis=0)
+#     expected_count = target_rows * target_cols
+#     real_count = len(stack_imgs)
+    
+#     if real_count == expected_count:
+#         # ✅ 完美情况：图片数量正好等于 6 * 10
+#         # 逻辑: (Case Run) 高 宽 通道 -> (Case 高) (Run 宽) 通道
+#         grid_image = einops.rearrange(
+#             stack_imgs, 
+#             '(case run) h w c -> (case h) (run w) c', 
+#             case=target_rows, 
+#             run=target_cols
+#         )
+        
+#         filename = f'Summary_Matrix_{target_rows}Cases_x_{target_cols}Runs.png'
+        
+#     else:
+#         # ⚠️ 异常情况：可能中间有些 Run 崩溃了没存下来
+#         print(f"⚠️ 图片数量 ({real_count}) 与实验设定 ({target_rows}x{target_cols}={expected_count}) 不匹配，回退到自动布局。")
+#         # 自动算一个近似正方形的布局
+#         target_cols = int(np.ceil(np.sqrt(real_count)))
+#         target_rows = int(np.ceil(real_count / target_cols))
+        
+#         # 补黑帧
+#         pad_num = target_rows * target_cols - real_count
+#         if pad_num > 0:
+#             padding = np.zeros((pad_num, *stack_imgs.shape[1:]), dtype=stack_imgs.dtype)
+#             stack_imgs = np.concatenate([stack_imgs, padding], axis=0)
+            
+#         grid_image = einops.rearrange(
+#             stack_imgs, 
+#             '(rows cols) h w c -> (rows h) (cols w) c', 
+#             rows=target_rows, 
+#             cols=target_cols
+#         )
+#         filename = f'Summary_Grid_Fallback_{target_rows}x{target_cols}.png'
 
-#     # 3. 使用 einops 重排像素
-#     # 逻辑: (行 列) 高 宽 通道 -> (行 高) (列 宽) 通道
-#     grid_image = einops.rearrange(
-#         stack_imgs, 
-#         '(rows cols) h w c -> (rows h) (cols w) c', 
-#         rows=N_ROWS, 
-#         cols=N_COLS
-#     )
-    
 #     # 4. 保存大图
-#     grid_path = join(args.savepath, f'Summary_Grid_{N_ROWS}x{N_COLS}.png')
+#     grid_path = join(args.savepath, filename)
 #     imageio.imsave(grid_path, grid_image)
 #     print(f"✅ 最终拼图已保存: {grid_path}")
+    
+#     # 💡 提示：如果图片太大看不清，可以单独去文件夹里看 all_runs_vis_small_xxx 目录
 # else:
 #     print("❌ 没有收集到图片，无法拼图")
-# ... (外层循环结束)
-
-# ==================== 【修改】生成 Case x Repeat 的矩阵拼图 ====================
-print("\n正在生成最终汇总拼图...")
-if len(all_run_images) > 0:
-    import einops
-    
-    # 1. 堆叠成 numpy 数组 (Total, H, W, C)
-    stack_imgs = np.stack(all_run_images) 
-    
-    # 2. 动态设定行列
-    # 行数 = 你的 Case 数量 (6)
-    # 列数 = 你的重复次数 (10)
-    # 注意：这两个变量应该在你的脚本开头定义过
-    target_rows = NUM_CASES        
-    target_cols = REPEATS_PER_CASE 
-    
-    expected_count = target_rows * target_cols
-    real_count = len(stack_imgs)
-    
-    if real_count == expected_count:
-        # ✅ 完美情况：图片数量正好等于 6 * 10
-        # 逻辑: (Case Run) 高 宽 通道 -> (Case 高) (Run 宽) 通道
-        grid_image = einops.rearrange(
-            stack_imgs, 
-            '(case run) h w c -> (case h) (run w) c', 
-            case=target_rows, 
-            run=target_cols
-        )
-        
-        filename = f'Summary_Matrix_{target_rows}Cases_x_{target_cols}Runs.png'
-        
-    else:
-        # ⚠️ 异常情况：可能中间有些 Run 崩溃了没存下来
-        print(f"⚠️ 图片数量 ({real_count}) 与实验设定 ({target_rows}x{target_cols}={expected_count}) 不匹配，回退到自动布局。")
-        # 自动算一个近似正方形的布局
-        target_cols = int(np.ceil(np.sqrt(real_count)))
-        target_rows = int(np.ceil(real_count / target_cols))
-        
-        # 补黑帧
-        pad_num = target_rows * target_cols - real_count
-        if pad_num > 0:
-            padding = np.zeros((pad_num, *stack_imgs.shape[1:]), dtype=stack_imgs.dtype)
-            stack_imgs = np.concatenate([stack_imgs, padding], axis=0)
-            
-        grid_image = einops.rearrange(
-            stack_imgs, 
-            '(rows cols) h w c -> (rows h) (cols w) c', 
-            rows=target_rows, 
-            cols=target_cols
-        )
-        filename = f'Summary_Grid_Fallback_{target_rows}x{target_cols}.png'
-
-    # 4. 保存大图
-    grid_path = join(args.savepath, filename)
-    imageio.imsave(grid_path, grid_image)
-    print(f"✅ 最终拼图已保存: {grid_path}")
-    
-    # 💡 提示：如果图片太大看不清，可以单独去文件夹里看 all_runs_vis_small_xxx 目录
-else:
-    print("❌ 没有收集到图片，无法拼图")
 # ========================================================================
 
 elbo_batch = np.array(elbo_batch)
@@ -1121,6 +1091,25 @@ if best_safe_margin > 0:
     print(f"Best Safe Margin (in successful runs): {best_safe_margin:.4f}m")
 else:
     print("No successful runs recorded.")
+
+
+
+# ==================== 💾 [新增] 保存所有数据到 PKL ====================
+# 文件名建议带上算法名字和时间戳，防止覆盖
+import datetime
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+# ⚠️ 记得修改这里的 filename 前缀，对应你当前跑的算法
+algo_name = "SafeDiffuser_Hard" 
+pkl_filename = f"RawData_{algo_name}_{timestamp}.pkl"
+pkl_path = join(args.savepath, pkl_filename)
+
+with open(pkl_path, 'wb') as f:
+    pickle.dump(all_raw_results, f)
+
+print(f"\n✅ 原始数据已保存至: {pkl_path}")
+print(f"包含 {len(all_raw_results)} 条轨迹数据")
+# ==================================================================
+
 exit()
 
 
@@ -1137,3 +1126,4 @@ print(f"Mode: {'SafeDiffuser (CBF On)' if USE_CBF else 'Baseline (CBF Off)'}")
 print(f"Success Rate: {success}/{iter+1}")
 print(f"Average Score: {np.mean(score_batch):.4f}")
 print("-" * 30)
+
