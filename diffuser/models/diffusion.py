@@ -222,6 +222,225 @@ class GaussianDiffusion(nn.Module):
                 x_start=x_recon, x_t=x, t=t)
         return model_mean, posterior_variance, posterior_log_variance
     
+    @torch.no_grad()   #only for sampling
+    def invariance_cf(self, x, xp1):  # closed form solution,  RoS-diffuser for maze2d-large-v1
+
+        x = x.squeeze(0)
+        xp1 = xp1.squeeze(0)
+
+        nBatch = x.shape[0]
+        ref = xp1 - x
+
+        # #normalize obstacle 1, x-1, y-0  x = 1/12*np.cos(theta) + 5.5/12, y = 1/9*np.sin(theta) + 5/9
+        # xr = 2*1/(self.norm_maxs[1] - self.norm_mins[1])
+        # yr = 2*1/(self.norm_maxs[0] - self.norm_mins[0])
+        # off_x = 2*(5.8-0.5 - self.norm_mins[1])/(self.norm_maxs[1] - self.norm_mins[1]) - 1
+        # off_y = 2*(5-0.5 - self.norm_mins[0])/(self.norm_maxs[0] - self.norm_mins[0]) - 1
+
+        # #CBF
+        # b0 = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1 - 0.01  # robust term 09/25
+        # Lfb = 0
+        # Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
+        # Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
+
+        # G0 = torch.cat([-Lgbu1, -Lgbu2], dim = 1)
+        # k = 1
+        # h0 = Lfb + k*b0
+
+        # self.safe1 = torch.min(b0[:,0] + 0.01)  # robust term 09/25
+        # 1. 计算缩放因子 (Radius in Normalized Space)
+        # 物理半径: Row=0.5, Col=0.5
+        yr = 2 * 0.6 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
+        
+        # 2. 计算中心点偏移 (Center in Normalized Space)
+        # 物理中心: Row=2.0, Col=2.0
+        off_y = 2 * (2.0 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
+        off_x = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
+
+        # 3. CBF 计算 (Quadratic: ^2)
+        b0 = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1   # robust term increased
+        Lfb = 0
+        Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
+        Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
+
+        G0 = torch.cat([-Lgbu1, -Lgbu2], dim = 1)
+        k = 1
+        h0 = Lfb + k*b0
+
+        self.safe1 = torch.min(b0[:,0] + 0.05)
+
+        # #normalize obstacle 2,  x = 1/12*np.sqrt(np.abs(np.cos(theta)))*np.sign(np.cos(theta)) + 5.3/12, y = 1/9*np.sqrt(np.abs(np.sin(theta)))*np.sign(np.sin(theta)) + 2/9
+        # xr = 2*1/(self.norm_maxs[1] - self.norm_mins[1])
+        # yr = 2*1/(self.norm_maxs[0] - self.norm_mins[0])
+        # off_x = 2*(5.3-0.5 - self.norm_mins[1])/(self.norm_maxs[1] - self.norm_mins[1]) - 1
+        # off_y = 2*(2-0.5 - self.norm_mins[0])/(self.norm_maxs[0] - self.norm_mins[0]) - 1
+
+        # #CBF
+        # b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 - 0.01 # robust term 09/25
+        # Lfb = 0
+        # Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
+        # Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
+
+        # self.safe2 = torch.min(b[:,0]+ 0.01) # robust term 09/25
+        # 1. 计算缩放因子
+        # 物理半径: Row=1.0 (长边), Col=0.5 (短边)
+        yr = 2 * 1.1 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
+        
+        # 2. 计算中心点偏移
+        # 物理中心: Row=4.5, Col=4.0
+        off_y = 2 * (4.5 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
+        off_x = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
+
+        # 3. CBF 计算 (Quartic: ^4) - 近似矩形
+        b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 - 0.05 # robust term
+        Lfb = 0
+        Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
+        Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
+
+        self.safe2 = torch.min(b[:,0]+ 0.05)
+
+        G1 = torch.cat([-Lgbu1, -Lgbu2], dim = 1)
+        k = 1
+        h1 = Lfb + k*b
+        
+        q = -ref[:,2:4].to(b.device)
+        
+        y1_bar = 1*G0  # H or Q = identity matrix
+        y2_bar = 1*G1
+        u_bar = -1*q
+        p1_bar = h0 - torch.sum(G0*u_bar,dim = 1).unsqueeze(1)
+        p2_bar = h1 - torch.sum(G1*u_bar,dim = 1).unsqueeze(1)
+
+        G = torch.cat([torch.sum(y1_bar*y1_bar,dim = 1).unsqueeze(1).unsqueeze(0), torch.sum(y1_bar*y2_bar,dim = 1).unsqueeze(1).unsqueeze(0), torch.sum(y2_bar*y1_bar,dim = 1).unsqueeze(1).unsqueeze(0), torch.sum(y2_bar*y2_bar,dim = 1).unsqueeze(1).unsqueeze(0)], dim = 0)
+        #G = 1*[y1_bar*y1_bar', y1_bar*y2_bar'; y2_bar*y1_bar', y2_bar*y2_bar']
+        w_p1_bar = torch.clamp(p1_bar, max=0)
+        w_p2_bar = torch.clamp(p2_bar, max=0)
+
+        # G 0-(1,1), 1-(1,2), 2-(2,1), 3-(2,2)
+        lambda1 = torch.where(G[2]*w_p2_bar < G[3]*p1_bar, torch.zeros_like(p1_bar), torch.where(G[1]*w_p1_bar < G[0]*p2_bar, w_p1_bar/G[0], torch.clamp(G[3]*p1_bar - G[2]*p2_bar, max=0)/(G[0]*G[3] - G[1]*G[2])))
+        
+        lambda2 = torch.where(G[2]*w_p2_bar < G[3]*p1_bar, w_p2_bar/G[3], torch.where(G[1]*w_p1_bar < G[0]*p2_bar, torch.zeros_like(p1_bar), torch.clamp(G[0]*p2_bar - G[1]*p1_bar, max=0)/(G[0]*G[3] - G[1]*G[2])))
+
+        out = lambda1*y1_bar + lambda2*y2_bar + u_bar
+        rt = xp1.clone()      
+        rt[:,2:4] = x[:,2:4] + out
+        # print(out)
+        rt = rt.unsqueeze(0)
+        return rt
+        
+    @torch.no_grad()   #only for sampling
+    def invariance_relax_cf(self, x, xp1, t):  # closed-form solution, ReS-diffuser for maze2d-large-v1
+
+        x = x.squeeze(0)
+        xp1 = xp1.squeeze(0)
+
+        nBatch = x.shape[0]
+        ref = xp1 - x
+
+        #normalize obstacle 1, x-1, y-0  x = 1/12*np.cos(theta) + 5.5/12, y = 1/9*np.sin(theta) + 5/9
+        # xr = 2*1/(self.norm_maxs[1] - self.norm_mins[1])
+        # yr = 2*1/(self.norm_maxs[0] - self.norm_mins[0])
+        # off_x = 2*(5.8-0.5 - self.norm_mins[1])/(self.norm_maxs[1] - self.norm_mins[1]) - 1
+        # off_y = 2*(5-0.5 - self.norm_mins[0])/(self.norm_maxs[0] - self.norm_mins[0]) - 1
+
+        # #CBF
+        # b = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1 - 0.01
+        # Lfb = 0
+        # Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
+        # Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
+
+        # self.safe1 = torch.min(b[:,0] + 0.01)
+        yr = 2 * 0.8 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 0.8 / (self.norm_maxs[1] - self.norm_mins[1])
+        
+        # 2. 计算中心点偏移 (Center in Normalized Space)
+        # 物理中心: Row=2.0, Col=2.0
+        off_y = 2 * (2.0 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
+        off_x = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
+
+        # 3. CBF 计算 (Quadratic: ^2)
+        b0 = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1 - 0.2   # robust term increased
+        Lfb = 0
+        Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
+        Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
+
+        if t >= 10:   # debug  10
+            sign = 100   #relax
+        else:
+            sign = 0   #non-relax
+
+        rx0 = torch.zeros_like(Lgbu1).to(b0.device)
+        rx1 = sign*torch.ones_like(Lgbu1).to(b0.device)
+
+        G0 = torch.cat([-Lgbu1, -Lgbu2, rx1, rx0], dim = 1)
+        k = 1
+        h0 = Lfb + k*b0
+        self.safe1 = torch.min(b0[:,0] + 0.2)
+
+
+        #normalize obstacle 2,  x = 1/12*np.sqrt(np.abs(np.cos(theta)))*np.sign(np.cos(theta)) + 5.3/12, y = 1/9*np.sqrt(np.abs(np.sin(theta)))*np.sign(np.sin(theta)) + 2/9
+        # xr = 2*1/(self.norm_maxs[1] - self.norm_mins[1])
+        # yr = 2*1/(self.norm_maxs[0] - self.norm_mins[0])
+        # off_x = 2*(5.3-0.5 - self.norm_mins[1])/(self.norm_maxs[1] - self.norm_mins[1]) - 1
+        # off_y = 2*(2-0.5 - self.norm_mins[0])/(self.norm_maxs[0] - self.norm_mins[0]) - 1
+
+        # #CBF
+        # b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 - 0.01
+        # Lfb = 0
+        # Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
+        # Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
+
+        # self.safe2 = torch.min(b[:,0] + 0.01)
+        yr = 2 * 1.3 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 0.8 / (self.norm_maxs[1] - self.norm_mins[1])
+        
+        # 2. 计算中心点偏移
+        # 物理中心: Row=4.5, Col=4.0
+        off_y = 2 * (4.5 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
+        off_x = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
+
+        # 3. CBF 计算 (Quartic: ^4) - 近似矩形
+        b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 - 0.2 # robust term
+        Lfb = 0
+        Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
+        Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
+
+        self.safe2 = torch.min(b[:,0]+ 0.2)
+
+        G1 = torch.cat([-Lgbu1, -Lgbu2, rx0, rx1], dim = 1)
+        k = 1
+        h1 = Lfb + k*b
+        
+   
+        q = -ref[:,2:4].to(G0.device)
+        q0 = torch.zeros_like(q).to(G0.device)
+        q = torch.cat([q, q0], dim = 1)
+
+        y1_bar = 1*G0  # H or Q = identity matrix
+        y2_bar = 1*G1
+        u_bar = -1*q
+        p1_bar = h0 - torch.sum(G0*u_bar,dim = 1).unsqueeze(1)
+        p2_bar = h1 - torch.sum(G1*u_bar,dim = 1).unsqueeze(1)
+
+        G = torch.cat([torch.sum(y1_bar*y1_bar,dim = 1).unsqueeze(1).unsqueeze(0), torch.sum(y1_bar*y2_bar,dim = 1).unsqueeze(1).unsqueeze(0), torch.sum(y2_bar*y1_bar,dim = 1).unsqueeze(1).unsqueeze(0), torch.sum(y2_bar*y2_bar,dim = 1).unsqueeze(1).unsqueeze(0)], dim = 0)
+        #G = 1*[y1_bar*y1_bar', y1_bar*y2_bar'; y2_bar*y1_bar', y2_bar*y2_bar']
+        w_p1_bar = torch.clamp(p1_bar, max=0)
+        w_p2_bar = torch.clamp(p2_bar, max=0)
+
+        # G 0-(1,1), 1-(1,2), 2-(2,1), 3-(2,2)
+        lambda1 = torch.where(G[2]*w_p2_bar < G[3]*p1_bar, torch.zeros_like(p1_bar), torch.where(G[1]*w_p1_bar < G[0]*p2_bar, w_p1_bar/G[0], torch.clamp(G[3]*p1_bar - G[2]*p2_bar, max=0)/(G[0]*G[3] - G[1]*G[2])))
+        
+        lambda2 = torch.where(G[2]*w_p2_bar < G[3]*p1_bar, w_p2_bar/G[3], torch.where(G[1]*w_p1_bar < G[0]*p2_bar, torch.zeros_like(p1_bar), torch.clamp(G[0]*p2_bar - G[1]*p1_bar, max=0)/(G[0]*G[3] - G[1]*G[2])))
+
+        out = lambda1*y1_bar + lambda2*y2_bar + u_bar
+        rt = xp1.clone()    
+        rt[:,2:4] = x[:,2:4] + out[:,0:2]
+        # print(out)
+        rt = rt.unsqueeze(0)
+        return rt
+    
 
     @torch.no_grad()
     def invariance_neural(self, x, xp1):
@@ -365,14 +584,14 @@ class GaussianDiffusion(nn.Module):
         # x = self.GD(x, xp1)
 
         ####################### SafeDiffusers 
-        x = xp1 # for training only
+        # x = xp1 # for training only
         # x = self.invariance(x, xp1)    # RoS
         # x = self.invariance_cf(x, xp1)  # RoS closed form
 
         # x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
 
         # x = self.invariance_relax(x, xp1, t) # ReS
-        # x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    
+        x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    
         # x = self.invariance_time(x, xp1, t)   # TVS
         # x = self.invariance_time_cf(x, xp1, t)  # TVS closed form
         # x = self.invariance_relax_narrow(x, xp1, t)  # narrow passage case

@@ -695,15 +695,108 @@ def generate_test_cases(num_cases, seed=42):
 # ==============================================================================
 # 2. 配置实验循环
 # ==============================================================================
+# ==============================================================================
+# 2. 定制化实验配置 (更严格的校验版)
+# ==============================================================================
 
-NUM_CASES = 10        # 想要多少组不同的起点终点，改成 10, 20, 50 等
-REPEATS_PER_CASE = 3 # 每组重复几次，保持 10 次以测试稳定性
+# 1. 设定基准测试点
+BASE_START = np.array([3, 1])
+BASE_GOAL  = np.array([4, 5])
+
+def is_valid_point(pos):
+    """
+    严格检查 pos=[row, col] 是否在地图内，且【绝对不】在障碍物内。
+    使用全局的 ALL_OBSTACLES (由 parse_maze_map 生成) 作为真理标准。
+    """
+    r, c = pos[0], pos[1]
+    
+    # 🤖 小车物理半径缓冲 (安全气囊)
+    # 车身半径 0.1 + 额外安全余量 0.1 = 0.2
+    ROBOT_PADDING = 0 
+    
+    # 1. 检查地图边界 (0.0 ~ 7.0)
+    # 确保不贴着地图最外圈的墙
+    if not (ROBOT_PADDING < r < (7.0 - ROBOT_PADDING) and 
+            ROBOT_PADDING < c < (7.0 - ROBOT_PADDING)):
+        # print(f"❌ 点 {pos.round(2)} 超出地图边界")
+        return False
+        
+    # 2. 检查所有障碍物 (使用 ALL_OBSTACLES)
+    for i, obs in enumerate(ALL_OBSTACLES):
+        c_r, c_c = obs['center']        # 墙中心
+        h_r, h_c = obs['half_extents']  # 墙半长/半宽
+        
+        # 判定范围 = 墙的几何范围 + 机器人的安全半径
+        # 只要行、列两个方向都“撞”上了，那就是真撞了
+        if (abs(r - c_r) < (h_r + ROBOT_PADDING)) and \
+           (abs(c - c_c) < (h_c + ROBOT_PADDING)):
+            # print(f"❌ 点 {pos.round(2)} 落在墙#{i}内部或太近 (Dist < {ROBOT_PADDING})")
+            return False
+            
+    return True
+
+def generate_custom_cases(num_neighbors=5, seed=2024):
+    """生成基准点和周边随机点，保证绝对安全"""
+    np.random.seed(seed)
+    cases = []
+    
+    # --- Case 0: 绝对基准 (先检查基准点本身是否安全) ---
+    if is_valid_point(BASE_START) and is_valid_point(BASE_GOAL):
+        cases.append((BASE_START, BASE_GOAL))
+        print(f"✅ 添加基准用例: {BASE_START} -> {BASE_GOAL}")
+    else:
+        print(f"⚠️ 警告：基准点本身就在障碍物里！请修改 BASE_START/GOAL。")
+        # 强制修正到一个安全位置 (可选)
+        # BASE_START = np.array([3, 3]) 
+    
+    # --- Case 1~N: 周边随机 (死循环直到找到有效点) ---
+    count = 0
+    max_attempts = 1000 # 防止死循环
+    total_attempts = 0
+    
+    print(f"正在生成 {num_neighbors} 组周边随机测试点...")
+    
+    while count < num_neighbors and total_attempts < max_attempts:
+        total_attempts += 1
+        
+        # 随机偏移量 (范围 ±0.5m)
+        noise_start = np.random.uniform(-0.5, 0.5, 2)
+        noise_goal  = np.random.uniform(-0.5, 0.5, 2)
+        
+        s = BASE_START + noise_start
+        g = BASE_GOAL + noise_goal
+        
+        # 只有当起点和终点都有效时才通过
+        if is_valid_point(s) and is_valid_point(g):
+            cases.append((s, g))
+            print(f"  [#{count+1}] ✅ 有效: {s.round(2)} -> {g.round(2)}")
+            count += 1
+        # else:
+            # print(f"  [尝试{total_attempts}] ❌ 无效，重试...")
+            
+    if total_attempts >= max_attempts:
+        print("⚠️ 警告：尝试次数过多，未能生成足够的有效点。建议检查基准点是否离墙太近。")
+            
+    return cases
+
+# 3. 配置运行参数
+REPEATS_PER_CASE = 10  # 每个 Case 跑 10 次
+test_cases = generate_custom_cases(num_neighbors=5) # 1个基准 + 5个周边 = 6个 Case
+NUM_CASES = len(test_cases)
 TOTAL_RUNS = NUM_CASES * REPEATS_PER_CASE
 
-# 生成固定的考题 (Seed 2024 保证每次运行生成的测试用例一致，方便对比)
-test_cases = generate_test_cases(NUM_CASES, seed=2024) 
-
 print(f"\n🚀 开始评测: 共 {NUM_CASES} 组路径, 每组重复 {REPEATS_PER_CASE} 次, 总计 {TOTAL_RUNS} 次运行")
+
+# ... (后面的循环逻辑不用变，直接复用之前的代码即可) ...
+# NUM_CASES = 10        # 想要多少组不同的起点终点，改成 10, 20, 50 等
+# REPEATS_PER_CASE = 3 # 每组重复几次，保持 10 次以测试稳定性
+# TOTAL_RUNS = NUM_CASES * REPEATS_PER_CASE
+
+# # 生成固定的考题 (Seed 2024 保证每次运行生成的测试用例一致，方便对比)
+# test_cases = generate_test_cases(NUM_CASES, seed=2024) 
+
+# print(f"\n🚀 开始评测: 共 {NUM_CASES} 组路径, 每组重复 {REPEATS_PER_CASE} 次, 总计 {TOTAL_RUNS} 次运行")
+
 all_run_images = []
 # 全局计数器
 global_iter = 0
@@ -916,6 +1009,42 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
         }
         runs_summary.append(run_diag)
 
+# print("\n正在生成最终汇总拼图...")
+# if len(all_run_images) > 0:
+#     import einops
+    
+#     # 1. 堆叠成 numpy 数组 (Total, H, W, C)
+#     stack_imgs = np.stack(all_run_images) 
+    
+#     # 2. 设定列数 (3个一行)
+#     N_COLS = 3  
+#     # 自动计算行数 (例如 30张图 / 3列 = 10行)
+#     N_ROWS = int(np.ceil(len(stack_imgs) / N_COLS))
+    
+#     # *可选*: 如果图片总数不是3的倍数，补黑帧防止报错
+#     pad_num = N_ROWS * N_COLS - len(stack_imgs)
+#     if pad_num > 0:
+#         padding = np.zeros((pad_num, *stack_imgs.shape[1:]), dtype=stack_imgs.dtype)
+#         stack_imgs = np.concatenate([stack_imgs, padding], axis=0)
+
+#     # 3. 使用 einops 重排像素
+#     # 逻辑: (行 列) 高 宽 通道 -> (行 高) (列 宽) 通道
+#     grid_image = einops.rearrange(
+#         stack_imgs, 
+#         '(rows cols) h w c -> (rows h) (cols w) c', 
+#         rows=N_ROWS, 
+#         cols=N_COLS
+#     )
+    
+#     # 4. 保存大图
+#     grid_path = join(args.savepath, f'Summary_Grid_{N_ROWS}x{N_COLS}.png')
+#     imageio.imsave(grid_path, grid_image)
+#     print(f"✅ 最终拼图已保存: {grid_path}")
+# else:
+#     print("❌ 没有收集到图片，无法拼图")
+# ... (外层循环结束)
+
+# ==================== 【修改】生成 Case x Repeat 的矩阵拼图 ====================
 print("\n正在生成最终汇总拼图...")
 if len(all_run_images) > 0:
     import einops
@@ -923,33 +1052,58 @@ if len(all_run_images) > 0:
     # 1. 堆叠成 numpy 数组 (Total, H, W, C)
     stack_imgs = np.stack(all_run_images) 
     
-    # 2. 设定列数 (3个一行)
-    N_COLS = 3  
-    # 自动计算行数 (例如 30张图 / 3列 = 10行)
-    N_ROWS = int(np.ceil(len(stack_imgs) / N_COLS))
+    # 2. 动态设定行列
+    # 行数 = 你的 Case 数量 (6)
+    # 列数 = 你的重复次数 (10)
+    # 注意：这两个变量应该在你的脚本开头定义过
+    target_rows = NUM_CASES        
+    target_cols = REPEATS_PER_CASE 
     
-    # *可选*: 如果图片总数不是3的倍数，补黑帧防止报错
-    pad_num = N_ROWS * N_COLS - len(stack_imgs)
-    if pad_num > 0:
-        padding = np.zeros((pad_num, *stack_imgs.shape[1:]), dtype=stack_imgs.dtype)
-        stack_imgs = np.concatenate([stack_imgs, padding], axis=0)
+    expected_count = target_rows * target_cols
+    real_count = len(stack_imgs)
+    
+    if real_count == expected_count:
+        # ✅ 完美情况：图片数量正好等于 6 * 10
+        # 逻辑: (Case Run) 高 宽 通道 -> (Case 高) (Run 宽) 通道
+        grid_image = einops.rearrange(
+            stack_imgs, 
+            '(case run) h w c -> (case h) (run w) c', 
+            case=target_rows, 
+            run=target_cols
+        )
+        
+        filename = f'Summary_Matrix_{target_rows}Cases_x_{target_cols}Runs.png'
+        
+    else:
+        # ⚠️ 异常情况：可能中间有些 Run 崩溃了没存下来
+        print(f"⚠️ 图片数量 ({real_count}) 与实验设定 ({target_rows}x{target_cols}={expected_count}) 不匹配，回退到自动布局。")
+        # 自动算一个近似正方形的布局
+        target_cols = int(np.ceil(np.sqrt(real_count)))
+        target_rows = int(np.ceil(real_count / target_cols))
+        
+        # 补黑帧
+        pad_num = target_rows * target_cols - real_count
+        if pad_num > 0:
+            padding = np.zeros((pad_num, *stack_imgs.shape[1:]), dtype=stack_imgs.dtype)
+            stack_imgs = np.concatenate([stack_imgs, padding], axis=0)
+            
+        grid_image = einops.rearrange(
+            stack_imgs, 
+            '(rows cols) h w c -> (rows h) (cols w) c', 
+            rows=target_rows, 
+            cols=target_cols
+        )
+        filename = f'Summary_Grid_Fallback_{target_rows}x{target_cols}.png'
 
-    # 3. 使用 einops 重排像素
-    # 逻辑: (行 列) 高 宽 通道 -> (行 高) (列 宽) 通道
-    grid_image = einops.rearrange(
-        stack_imgs, 
-        '(rows cols) h w c -> (rows h) (cols w) c', 
-        rows=N_ROWS, 
-        cols=N_COLS
-    )
-    
     # 4. 保存大图
-    grid_path = join(args.savepath, f'Summary_Grid_{N_ROWS}x{N_COLS}.png')
+    grid_path = join(args.savepath, filename)
     imageio.imsave(grid_path, grid_image)
     print(f"✅ 最终拼图已保存: {grid_path}")
+    
+    # 💡 提示：如果图片太大看不清，可以单独去文件夹里看 all_runs_vis_small_xxx 目录
 else:
     print("❌ 没有收集到图片，无法拼图")
-
+# ========================================================================
 
 elbo_batch = np.array(elbo_batch)
 print("elbo mean: ", np.mean(elbo_batch))

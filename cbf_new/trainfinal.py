@@ -73,7 +73,7 @@ ROI_RADIUS = 4.0          # 筛选数据的范围
 TTC_LOOKAHEAD = 1.0       # 预测未来几秒
 BATCH_SIZE = 4096
 LR = 1e-3
-EPOCHS = 400
+EPOCHS = 500
 NUM_TRAJ_TO_PLOT = 50     # 可视化时画多少条轨迹
 
 # 环境变量覆盖
