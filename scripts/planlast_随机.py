@@ -637,7 +637,7 @@ def is_valid_point(pos):
     
     # 🤖 小车物理半径缓冲 (安全气囊)
     # 小车半径约 0.15，我们设 0.25 保证绝对不擦边
-    ROBOT_PADDING = 0.15 
+    ROBOT_PADDING = 0.2 
     
     # 1. 检查地图边界 (0 ~ 7)
     # 以前是 0.1，太近了！改成 0.25 防止出生在地图边缘墙里
@@ -757,9 +757,14 @@ def generate_custom_cases(num_neighbors=5, seed=2024):
     return cases
 
 # 3. 配置运行参数
-REPEATS_PER_CASE = 10  # 每个 Case 跑 10 次
-test_cases = generate_custom_cases(num_neighbors=5) # 1个基准 + 5个周边 = 6个 Case
-NUM_CASES = len(test_cases)
+REPEATS_PER_CASE = 5  # 每个 Case 跑 10 次
+# 生成周边的情况
+# test_cases = generate_custom_cases(num_neighbors=5) # 1个基准 + 5个周边 = 6个 Case
+# NUM_CASES = len(test_cases)
+
+# 随机生成的情况
+NUM_CASES = 50
+test_cases = generate_test_cases(NUM_CASES, seed=2024) 
 TOTAL_RUNS = NUM_CASES * REPEATS_PER_CASE
 all_raw_results = []
 print(f"\n🚀 开始评测: 共 {NUM_CASES} 组路径, 每组重复 {REPEATS_PER_CASE} 次, 总计 {TOTAL_RUNS} 次运行")
@@ -781,93 +786,372 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
     print(f"\n>>> [Case {case_idx+1}/{NUM_CASES}] 起点:{start_pos.round(2)} -> 终点:{goal_pos.round(2)}")
 
     # --- 内层循环：测试稳定性 (Repeats) ---
-    for run_idx in range(REPEATS_PER_CASE):
-        global_iter += 1
-        print(f"    Run {run_idx+1}/{REPEATS_PER_CASE} (Total: {global_iter})")
+    # for run_idx in range(REPEATS_PER_CASE):
+    #     global_iter += 1
+    #     print(f"    Run {run_idx+1}/{REPEATS_PER_CASE} (Total: {global_iter})")
 
-        # 1. 环境重置
-        env.reset()
+    #     # 1. 环境重置
+    #     env.reset()
         
-        # 2. 设置起点 (Start)
-        init_state = np.array([start_pos[0], start_pos[1], 0, 0]) 
-        env.set_state(init_state[0:2], init_state[2:4])
+    #     # 2. 设置起点 (Start)
+    #     init_state = np.array([start_pos[0], start_pos[1], 0, 0]) 
+    #     env.set_state(init_state[0:2], init_state[2:4])
         
-        # 必须把 observation 定义出来
-        observation = init_state.copy() 
+    #     # 必须把 observation 定义出来
+    #     observation = init_state.copy() 
         
-        run_velocity = init_state[2:4].copy()
+    #     run_velocity = init_state[2:4].copy()
 
-        # 3. 设置终点 (Target)
-        target = goal_pos
-        env.set_target(target)
+    #     # 3. 设置终点 (Target)
+    #     target = goal_pos
+    #     env.set_target(target)
         
-        # 4. 设置 Diffusion 条件
-        cond = {
-            diffusion.horizon - 1: np.array([*target, 0, 0]),
-        }
+    #     # 4. 设置 Diffusion 条件
+    #     cond = {
+    #         diffusion.horizon - 1: np.array([*target, 0, 0]),
+    #     }
         
-        # 初始化 rollout
-        rollout = [observation.copy()]
-        total_reward = 0
+    #     # 初始化 rollout
+    #     rollout = [observation.copy()]
+    #     total_reward = 0
 
-        # --- 诊断变量初始化 ---
-        per_step_collisions = [] 
-        per_step_min_d = []
-        collided_flag = False
-        min_dist_overall = float('inf')
-        COLLISION_RADIUS = 0.10 # 根据之前的侦探模式修改为真实半径 0.10
+    #     # --- 诊断变量初始化 ---
+    #     per_step_collisions = [] 
+    #     per_step_min_d = []
+    #     collided_flag = False
+    #     min_dist_overall = float('inf')
+    #     COLLISION_RADIUS = 0.10 # 根据之前的侦探模式修改为真实半径 0.10
+
+    #     # --- 单次运行的主循环 (Time Steps) ---
+    #     for t in range(env.max_episode_steps):
+    #         state = env.state_vector().copy()
+
+    #         if t == 0:
+    #             cond[0] = observation
+    #             start_time = time.time()
+    #             action, samples, diffusion_paths, _, _, elbo = policy(cond, batch_size=args.batch_size)
+    #             end_time = time.time()
+    #             comp_time.append(end_time - start_time)
+    #             elbo_batch.append(elbo)
+                
+    #             current_trajectory = diffusion_paths[0]
+    #             current_samples = samples.observations
+    #             # actions = samples.actions[0] #这一行好像没用到，先注释防止报错
+    #             sequence = samples.observations[0]
+                
+    #             if sequence.shape[0] > 0:
+    #                 seq_pos = sequence[:, :2]
+    #                 dist_to_box = np.array([get_closest_box_distance(p)[0] for p in seq_pos])
+    #                 closest_idx = int(np.argmin(dist_to_box))
+    #                 run_velocity = sequence[closest_idx, 2:4].copy()
+                
+    #             if BOUNDARY_VELOCITY_OVERRIDE is not None:
+    #                 run_velocity = np.array(BOUNDARY_VELOCITY_OVERRIDE, dtype=np.float32)
+                
+    #             # diffusion_paths = diffusion_paths[0] # 前面已经取过了
+
+    #         if t < len(sequence) - 1:
+    #             next_waypoint = sequence[t+1]
+    #         else:
+    #             next_waypoint = sequence[-1].copy()
+    #             next_waypoint[2:] = 0
+            
+    #         # 计算 Action
+    #         action = next_waypoint[:2] - state[:2] + (next_waypoint[2:] - state[2:])
+            
+    #         # 环境步进
+    #         next_observation, reward, terminal, _ = env.step(action)
+    #         total_reward += reward
+
+    #         # --- 碰撞检测 ---
+    #         pos_xy = next_observation[:2].copy() # 机器人的真实物理坐标
+    #         min_d, wall_idx = get_closest_box_distance(pos_xy)
+    #         per_step_min_d.append(min_d)
+            
+    #         # 判定是否发生碰撞
+    #         if min_d < COLLISION_RADIUS:
+    #             per_step_collisions.append(True)
+    #             collided_flag = True
+    #             # print(f"在第 {t} 步撞上了第 {wall_idx} 号墙")
+    #         else:
+    #             per_step_collisions.append(False)
+
+    #         if min_d < min_dist_overall:
+    #             min_dist_overall = min_d
+
+    #         score = env.get_normalized_score(total_reward)
+    #         rollout.append(next_observation.copy())
+    
+    #         if terminal:
+    #             break
+
+    #         observation = next_observation
+        
+    #     # --- 单次运行结束后的处理 ---
+
+    #     # 1. 判断成功与否
+    #     is_success = False
+    #     if reward > 0.95: # 到达目标
+    #         is_success = True
+        
+    #     status_str = "OK" if is_success else "FAIL"
+        
+    #     # # 2. 保存图片逻辑 (确保每张都保存)
+    #     # # 文件夹路径：logs/..../all_runs_vis_small_lagcbf/
+    #     # # all_runs_dir = join(args.savepath, 'all_runs_vis_small_Ros')
+    #     # # makedirs(all_runs_dir)
+    #     # if run_idx == 0: 
+    #     #     # 文件夹路径
+    #     #     all_runs_dir = join(args.savepath, 'all_runs_vis_small_Res2')
+    #     #     makedirs(all_runs_dir)
+            
+    #     #     # 文件名：只保留 Case 号，标记这是该 Case 的第一次运行
+    #     #     # 例如: Case_0_FirstRun_OK.png
+    #     #     img_filename = f'Case_{case_idx}_Run_{run_idx}_{status_str}_score_{score:.2f}.png'
+    #     #     save_path_full = join(all_runs_dir, img_filename)
+
+    #     #     if DRAW_DYNAMIC_BOUNDARY and boundary_model is not None:
+    #     #         save_runs_with_boundary(
+    #     #             save_path_full,
+    #     #             current_samples, 
+    #     #             renderer,
+    #     #             args.dataset,
+    #     #             boundary_model,
+    #     #             run_velocity,
+    #     #             FULL_MAZE_DOMAIN, 
+    #     #             ALL_OBSTACLES,    
+    #     #             ncol=1,
+    #     #         )
+    #     #     else:
+    #     #         renderer.composite(save_path_full, current_samples, ncol=1)
+                
+    #     #     print(f"  📸 已保存本 Case 的示例图片: {img_filename}")
+        
+    #     # # 文件名：run_C{Case号}_R{Run号}_{状态}_score_{分数}.png
+    #     # # 这样每个 Case 的每次 Run 都会是一个独立的文件，不会被覆盖
+    #     # img_filename = f'run_C{case_idx}_R{run_idx}_{status_str}_score_{score:.2f}.png'
+    #     # save_path_full = join(all_runs_dir, img_filename)
+
+    #     # if DRAW_DYNAMIC_BOUNDARY and boundary_model is not None:
+    #     #     save_runs_with_boundary(
+    #     #         save_path_full,
+    #     #         current_samples, # 这里用 diffusion 生成的样本轨迹
+    #     #         renderer,
+    #     #         args.dataset,
+    #     #         boundary_model,
+    #     #         run_velocity,
+    #     #         FULL_MAZE_DOMAIN, 
+    #     #         ALL_OBSTACLES,    
+    #     #         ncol=1,
+    #     #     )
+    #     # else:
+    #     #     # 如果不画边界，就用普通的 render
+    #     #     # 注意：renderer.composite 通常画的是 diffusion 的 plan (current_samples)
+    #     #     # 如果你想画实际走出来的轨迹 (rollout)，需要转换一下格式
+    #     #     # 这里保持原逻辑，画 current_samples (模型规划出的轨迹)
+    #     #     renderer.composite(save_path_full, current_samples, ncol=1)
+
+    #     # # try:
+    #     # #     # 直接读取刚刚保存好的这一张图
+    #     # #     img_data = imageio.imread(save_path_full)
+            
+    #     # #     # 确保图片没有 Alpha 通道 (如果是4通道转3通道，防止拼接报错)
+    #     # #     if img_data.shape[-1] == 4:
+    #     # #         img_data = img_data[..., :3]
+                
+    #     # #     all_run_images.append(img_data)
+    #     # # except Exception as e:
+    #     # #     print(f"⚠️ 收集拼图失败: {e}")
+
+    #     # # 3. 保存最佳安全结果 (全局最佳)
+    #     # if is_success:
+    #     #     if min_dist_overall > best_safe_margin:
+    #     #         print(f"发现更安全的成功路径！Run {global_iter}: MinDist 从 {best_safe_margin:.4f}m 提升到 {min_dist_overall:.4f}m (Score: {score:.4f})")
+    #     #         best_safe_margin = min_dist_overall
+                
+    #     #         # 保存全局最佳结果
+    #     #         fullpath = join(args.savepath, 'best_safe_plan_global.png') 
+    #     #         renderer.composite(fullpath, current_samples, ncol=1)
+                
+    #     #         # 也可以保存这一轮的视频
+    #     #         renderer.render_diffusion(join(args.savepath, f'best_safe_diffusion_global.mp4'), current_trajectory)
+    #     #         # print("最佳安全结果已保存")
+
+    #     print(f"Run {global_iter}: Score = {score:.4f}, Success = {is_success}, MinDist = {min_dist_overall:.4f}")
+
+    #     # 4. 统计计数
+    #     if is_success:
+    #         success = success + 1
+    #     if not collided_flag:
+    #         safe_count = safe_count + 1
+    #     score_batch.append(score)
+
+    #     # 打印本轮详细状态
+    #     # status_icon = "✅" if (is_success and not collided_flag) else "❌" # 既成功又没撞才算完美
+    #     safe_icon = "✅" if not collided_flag else "❌"
+    #     goal_icon = "✅" if is_success else "❌"
+        
+    #     print(f"Result [Round {global_iter}/{TOTAL_RUNS}] Goal: {goal_icon} | Safe: {safe_icon} | MinDist: {min_dist_overall:.3f}m | Score: {score:.4f}")
+
+    #     # ==================== [新增] 数据收集核心逻辑 ====================
+        
+    #     # 1. 计算轨迹长度 (Path Length)
+    #     # rollout 是 list of arrays, 先转成 (T, 4) 的 numpy array
+    #     traj_stack = np.stack(rollout) 
+    #     # 只取 XY 坐标 (T, 2)
+    #     traj_xy = traj_stack[:, :2]
+    #     # 计算每一步的位移向量: s_{t+1} - s_t
+    #     diffs = traj_xy[1:] - traj_xy[:-1]
+    #     # 计算每一步的欧氏距离
+    #     dists = np.linalg.norm(diffs, axis=1)
+    #     # 求和得到整条轨迹长度
+    #     path_length = np.sum(dists)
+
+    #     # 2. 计算碰撞步数 (Collision Steps)
+    #     # per_step_collisions 是一个 [False, False, True, ...] 的 list
+    #     # sum(True) 就是 1，sum(False) 是 0
+    #     n_collision_steps = sum(per_step_collisions)
+
+    #     # 3. 组装单次运行的数据包 (Dict)
+    #     run_data = {
+    #         'algorithm': "SafeDiffuser_Hard_medium", # <--- ⚠️ 记得每次换算法跑的时候改这个名字！
+    #         'case_idx': case_idx,
+    #         'run_idx': run_idx,
+    #         'start_point': start_pos,
+    #         'goal_point': goal_pos,
+    #         'is_collision': 1 if collided_flag else 0, # 指标1: 是否碰撞 (0/1)
+    #         'collision_steps': n_collision_steps,      # 指标2: 碰撞步数
+    #         'path_length': path_length,                # 指标3: 轨迹长度
+    #         'is_success': 1 if is_success else 0,
+    #         'score': score,
+    #         # 'trajectory': traj_xy  # <--- 如果硬盘够大，强烈建议把原始轨迹也存下来，方便以后画图！
+    #     }
+        
+    #     all_raw_results.append(run_data)
+    #     # ==================================================================
+
+    #     # 保存单轮诊断数据
+    #     makedirs(args.savepath) # 确保 savepath 存在
+    #     run_diag = {
+    #         'run': int(global_iter),
+    #         'case_idx': int(case_idx), # 记录是第几个 Case
+    #         'run_idx': int(run_idx),   # 记录是该 Case 的第几次 Run
+    #         'reached_goal': bool(is_success),
+    #         'collided': bool(collided_flag),
+    #         'collision_steps': [int(i) for i, v in enumerate(per_step_collisions) if v] if len(per_step_collisions) > 0 else [],
+    #         'min_distance_overall': float(min_dist_overall) if min_dist_overall != float('inf') else None,
+    #         'score': float(score)
+    #     }
+    #     runs_summary.append(run_diag)
+# ===========================================================================
+    # 🔄 [修改] 内层循环改写为 While + 自动重试机制
+    # ===========================================================================
+    
+    run_idx = 0
+    while run_idx < REPEATS_PER_CASE:
+        # 临时增加全局计数（仅用于显示，如果失败会回退）
+        current_global_step = global_iter + 1
+        
+        print(f"    Run {run_idx+1}/{REPEATS_PER_CASE} (Total Valid: {global_iter}) - Attempting...")
+
+        sim_crashed = False # 标记本局是否崩溃
+
+        # 1. 环境初始化 (带保护)
+        try:
+            env.reset()
+            
+            # 设置起点 (Start)
+            init_state = np.array([start_pos[0], start_pos[1], 0, 0]) 
+            env.set_state(init_state[0:2], init_state[2:4])
+            
+            # 必须把 observation 定义出来
+            observation = init_state.copy() 
+            run_velocity = init_state[2:4].copy()
+
+            # 设置终点 (Target)
+            target = goal_pos
+            env.set_target(target)
+            
+            # 设置 Diffusion 条件
+            cond = {
+                diffusion.horizon - 1: np.array([*target, 0, 0]),
+            }
+            
+            # 初始化 rollout 和统计变量
+            rollout = [observation.copy()]
+            total_reward = 0
+            per_step_collisions = [] 
+            per_step_min_d = []
+            collided_flag = False
+            min_dist_overall = float('inf')
+            COLLISION_RADIUS = 0.20 # 保持较大的 Padding 防止 NaN
+
+        except Exception as e:
+            print(f"⚠️ [初始化失败] Case {case_idx} 重置环境时出错: {e} -> 自动重试")
+            continue # 直接跳过，重试这一局
 
         # --- 单次运行的主循环 (Time Steps) ---
         for t in range(env.max_episode_steps):
             state = env.state_vector().copy()
 
-            if t == 0:
-                cond[0] = observation
-                start_time = time.time()
-                action, samples, diffusion_paths, _, _, elbo = policy(cond, batch_size=args.batch_size)
-                end_time = time.time()
-                comp_time.append(end_time - start_time)
-                elbo_batch.append(elbo)
-                
-                current_trajectory = diffusion_paths[0]
-                current_samples = samples.observations
-                # actions = samples.actions[0] #这一行好像没用到，先注释防止报错
-                sequence = samples.observations[0]
-                
-                if sequence.shape[0] > 0:
-                    seq_pos = sequence[:, :2]
-                    dist_to_box = np.array([get_closest_box_distance(p)[0] for p in seq_pos])
-                    closest_idx = int(np.argmin(dist_to_box))
-                    run_velocity = sequence[closest_idx, 2:4].copy()
-                
-                if BOUNDARY_VELOCITY_OVERRIDE is not None:
-                    run_velocity = np.array(BOUNDARY_VELOCITY_OVERRIDE, dtype=np.float32)
-                
-                # diffusion_paths = diffusion_paths[0] # 前面已经取过了
+            # Diffusion 规划部分 (通常不会炸，但也包起来比较安全)
+            try:
+                if t == 0:
+                    cond[0] = observation
+                    start_time = time.time()
+                    action, samples, diffusion_paths, _, _, elbo = policy(cond, batch_size=args.batch_size)
+                    end_time = time.time()
+                    comp_time.append(end_time - start_time)
+                    elbo_batch.append(elbo)
+                    
+                    current_trajectory = diffusion_paths[0]
+                    current_samples = samples.observations
+                    sequence = samples.observations[0]
+                    
+                    if sequence.shape[0] > 0:
+                        seq_pos = sequence[:, :2]
+                        dist_to_box = np.array([get_closest_box_distance(p)[0] for p in seq_pos])
+                        closest_idx = int(np.argmin(dist_to_box))
+                        run_velocity = sequence[closest_idx, 2:4].copy()
+                    
+                    if BOUNDARY_VELOCITY_OVERRIDE is not None:
+                        run_velocity = np.array(BOUNDARY_VELOCITY_OVERRIDE, dtype=np.float32)
 
-            if t < len(sequence) - 1:
-                next_waypoint = sequence[t+1]
-            else:
-                next_waypoint = sequence[-1].copy()
-                next_waypoint[2:] = 0
-            
-            # 计算 Action
-            action = next_waypoint[:2] - state[:2] + (next_waypoint[2:] - state[2:])
-            
-            # 环境步进
-            next_observation, reward, terminal, _ = env.step(action)
+                if t < len(sequence) - 1:
+                    next_waypoint = sequence[t+1]
+                else:
+                    next_waypoint = sequence[-1].copy()
+                    next_waypoint[2:] = 0
+                
+                # 计算 Action
+                action = next_waypoint[:2] - state[:2] + (next_waypoint[2:] - state[2:])
+            except Exception as e:
+                print(f"⚠️ [规划失败] Diffusion 计算出错: {e}")
+                sim_crashed = True
+                break
+
+            # -----------------------------------------------------------
+            # 🛡️ [核心保护] 物理引擎步进 (防止 NaN 崩溃)
+            # -----------------------------------------------------------
+            try:
+                next_observation, reward, terminal, _ = env.step(action)
+            except Exception as e:
+                print(f"💥 [严重崩溃] MuJoCo NaN 错误 (Step {t}): {e}")
+                print(f"🔄 正在丢弃本局数据，重新生成 Case {case_idx} 的第 {run_idx+1} 条轨迹...")
+                sim_crashed = True
+                break # 跳出 for 循环，触发外层的 continue
+            # -----------------------------------------------------------
+
             total_reward += reward
 
             # --- 碰撞检测 ---
-            pos_xy = next_observation[:2].copy() # 机器人的真实物理坐标
+            pos_xy = next_observation[:2].copy()
             min_d, wall_idx = get_closest_box_distance(pos_xy)
             per_step_min_d.append(min_d)
             
-            # 判定是否发生碰撞
             if min_d < COLLISION_RADIUS:
                 per_step_collisions.append(True)
                 collided_flag = True
-                # print(f"在第 {t} 步撞上了第 {wall_idx} 号墙")
             else:
                 per_step_collisions.append(False)
 
@@ -882,71 +1166,44 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
 
             observation = next_observation
         
-        # --- 单次运行结束后的处理 ---
+        # === 本局结束后的判断 ===
+        if sim_crashed:
+            # 如果是因为崩溃退出的，不保存，直接重试 (run_idx 不增加)
+            continue
 
+        # --- 只有正常跑完才会执行以下保存逻辑 ---
+        
         # 1. 判断成功与否
         is_success = False
-        if reward > 0.95: # 到达目标
+        if reward > 0.95: 
             is_success = True
         
         status_str = "OK" if is_success else "FAIL"
         
-        # 2. 保存图片逻辑 (确保每张都保存)
-        # 文件夹路径：logs/..../all_runs_vis_small_lagcbf/
-        all_runs_dir = join(args.savepath, 'all_runs_vis_small_Res2')
-        makedirs(all_runs_dir)
-        
-        # 文件名：run_C{Case号}_R{Run号}_{状态}_score_{分数}.png
-        # 这样每个 Case 的每次 Run 都会是一个独立的文件，不会被覆盖
-        img_filename = f'run_C{case_idx}_R{run_idx}_{status_str}_score_{score:.2f}.png'
-        save_path_full = join(all_runs_dir, img_filename)
+        # 2. 图片保存 (仅保存每个 Case 的第一次成功运行，节省空间)
+        if run_idx == 0:
+            all_runs_dir = join(args.savepath, 'all_runs_vis_small_Res2')
+            makedirs(all_runs_dir)
+            img_filename = f'Case_{case_idx}_Run_{run_idx}_{status_str}_score_{score:.2f}.png'
+            save_path_full = join(all_runs_dir, img_filename)
 
-        if DRAW_DYNAMIC_BOUNDARY and boundary_model is not None:
-            save_runs_with_boundary(
-                save_path_full,
-                current_samples, # 这里用 diffusion 生成的样本轨迹
-                renderer,
-                args.dataset,
-                boundary_model,
-                run_velocity,
-                FULL_MAZE_DOMAIN, 
-                ALL_OBSTACLES,    
-                ncol=1,
-            )
-        else:
-            # 如果不画边界，就用普通的 render
-            # 注意：renderer.composite 通常画的是 diffusion 的 plan (current_samples)
-            # 如果你想画实际走出来的轨迹 (rollout)，需要转换一下格式
-            # 这里保持原逻辑，画 current_samples (模型规划出的轨迹)
-            renderer.composite(save_path_full, current_samples, ncol=1)
+            if DRAW_DYNAMIC_BOUNDARY and boundary_model is not None:
+                save_runs_with_boundary(
+                    save_path_full, current_samples, renderer, args.dataset,
+                    boundary_model, run_velocity, FULL_MAZE_DOMAIN, ALL_OBSTACLES, ncol=1
+                )
+            else:
+                renderer.composite(save_path_full, current_samples, ncol=1)
+            print(f"  📸 已保存示例截图: {img_filename}")
 
-        # try:
-        #     # 直接读取刚刚保存好的这一张图
-        #     img_data = imageio.imread(save_path_full)
-            
-        #     # 确保图片没有 Alpha 通道 (如果是4通道转3通道，防止拼接报错)
-        #     if img_data.shape[-1] == 4:
-        #         img_data = img_data[..., :3]
-                
-        #     all_run_images.append(img_data)
-        # except Exception as e:
-        #     print(f"⚠️ 收集拼图失败: {e}")
-
-        # 3. 保存最佳安全结果 (全局最佳)
+        # 3. 更新最佳记录
         if is_success:
             if min_dist_overall > best_safe_margin:
-                print(f"发现更安全的成功路径！Run {global_iter}: MinDist 从 {best_safe_margin:.4f}m 提升到 {min_dist_overall:.4f}m (Score: {score:.4f})")
+                # print(f"发现更安全的成功路径！MinDist: {min_dist_overall:.4f}m")
                 best_safe_margin = min_dist_overall
-                
-                # 保存全局最佳结果
                 fullpath = join(args.savepath, 'best_safe_plan_global.png') 
                 renderer.composite(fullpath, current_samples, ncol=1)
-                
-                # 也可以保存这一轮的视频
                 renderer.render_diffusion(join(args.savepath, f'best_safe_diffusion_global.mp4'), current_trajectory)
-                # print("最佳安全结果已保存")
-
-        print(f"Run {global_iter}: Score = {score:.4f}, Success = {is_success}, MinDist = {min_dist_overall:.4f}")
 
         # 4. 统计计数
         if is_success:
@@ -955,64 +1212,50 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
             safe_count = safe_count + 1
         score_batch.append(score)
 
-        # 打印本轮详细状态
-        # status_icon = "✅" if (is_success and not collided_flag) else "❌" # 既成功又没撞才算完美
-        safe_icon = "✅" if not collided_flag else "❌"
-        goal_icon = "✅" if is_success else "❌"
-        
-        print(f"Result [Round {global_iter}/{TOTAL_RUNS}] Goal: {goal_icon} | Safe: {safe_icon} | MinDist: {min_dist_overall:.3f}m | Score: {score:.4f}")
-
-        # ==================== [新增] 数据收集核心逻辑 ====================
-        
-        # 1. 计算轨迹长度 (Path Length)
-        # rollout 是 list of arrays, 先转成 (T, 4) 的 numpy array
+        # 5. 收集数据 (PKL)
         traj_stack = np.stack(rollout) 
-        # 只取 XY 坐标 (T, 2)
         traj_xy = traj_stack[:, :2]
-        # 计算每一步的位移向量: s_{t+1} - s_t
         diffs = traj_xy[1:] - traj_xy[:-1]
-        # 计算每一步的欧氏距离
         dists = np.linalg.norm(diffs, axis=1)
-        # 求和得到整条轨迹长度
         path_length = np.sum(dists)
-
-        # 2. 计算碰撞步数 (Collision Steps)
-        # per_step_collisions 是一个 [False, False, True, ...] 的 list
-        # sum(True) 就是 1，sum(False) 是 0
         n_collision_steps = sum(per_step_collisions)
 
-        # 3. 组装单次运行的数据包 (Dict)
         run_data = {
-            'algorithm': "SafeDiffuser_Hard", # <--- ⚠️ 记得每次换算法跑的时候改这个名字！
+            'algorithm': "SafeDiffuser_Hard", # ⚠️ 记得按需修改算法名
             'case_idx': case_idx,
             'run_idx': run_idx,
             'start_point': start_pos,
             'goal_point': goal_pos,
-            'is_collision': 1 if collided_flag else 0, # 指标1: 是否碰撞 (0/1)
-            'collision_steps': n_collision_steps,      # 指标2: 碰撞步数
-            'path_length': path_length,                # 指标3: 轨迹长度
+            'is_collision': 1 if collided_flag else 0,
+            'collision_steps': n_collision_steps,
+            'path_length': path_length,
             'is_success': 1 if is_success else 0,
             'score': score,
-            # 'trajectory': traj_xy  # <--- 如果硬盘够大，强烈建议把原始轨迹也存下来，方便以后画图！
         }
-        
         all_raw_results.append(run_data)
-        # ==================================================================
 
-        # 保存单轮诊断数据
-        makedirs(args.savepath) # 确保 savepath 存在
+        # 打印进度
+        safe_icon = "✅" if not collided_flag else "❌"
+        goal_icon = "✅" if is_success else "❌"
+        # 使用 global_iter + 1 因为这一轮已经确定有效了
+        print(f"Result [Total {global_iter + 1}/{TOTAL_RUNS}] Goal: {goal_icon} | Safe: {safe_icon} | MinDist: {min_dist_overall:.3f}m | Score: {score:.4f}")
+
+        # 保存单轮诊断数据 (JSON)
+        makedirs(args.savepath)
         run_diag = {
-            'run': int(global_iter),
-            'case_idx': int(case_idx), # 记录是第几个 Case
-            'run_idx': int(run_idx),   # 记录是该 Case 的第几次 Run
+            'run': int(global_iter + 1),
+            'case_idx': int(case_idx),
+            'run_idx': int(run_idx),
             'reached_goal': bool(is_success),
             'collided': bool(collided_flag),
-            'collision_steps': [int(i) for i, v in enumerate(per_step_collisions) if v] if len(per_step_collisions) > 0 else [],
             'min_distance_overall': float(min_dist_overall) if min_dist_overall != float('inf') else None,
             'score': float(score)
         }
         runs_summary.append(run_diag)
 
+        # ✅ 这一轮顺利完成，计数器加 1
+        run_idx += 1
+        global_iter += 1
 
 # ==================== 【修改】生成 Case x Repeat 的矩阵拼图 ====================
 # print("\n正在生成最终汇总拼图...")
@@ -1099,7 +1342,7 @@ else:
 import datetime
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 # ⚠️ 记得修改这里的 filename 前缀，对应你当前跑的算法
-algo_name = "SafeDiffuser_Hard" 
+algo_name = "SafeDiffuser_Hard_medium" 
 pkl_filename = f"RawData_{algo_name}_{timestamp}.pkl"
 pkl_path = join(args.savepath, pkl_filename)
 
@@ -1111,19 +1354,3 @@ print(f"包含 {len(all_raw_results)} 条轨迹数据")
 # ==================================================================
 
 exit()
-
-
-import pdb; pdb.set_trace()
-
-## save result as a json file
-json_path = join(args.savepath, 'rollout.json')
-json_data = {'score': score, 'step': t, 'return': total_reward, 'term': terminal,
-    'epoch_diffusion': diffusion_experiment.epoch}
-json.dump(json_data, open(json_path, 'w'), indent=2, sort_keys=True)
-
-print("-" * 30)
-print(f"Mode: {'SafeDiffuser (CBF On)' if USE_CBF else 'Baseline (CBF Off)'}")
-print(f"Success Rate: {success}/{iter+1}")
-print(f"Average Score: {np.mean(score_batch):.4f}")
-print("-" * 30)
-

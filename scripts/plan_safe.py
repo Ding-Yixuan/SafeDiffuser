@@ -512,7 +512,7 @@ ALL_OBSTACLES = parse_maze_map(MAZE_MAP_LARGE)
 FULL_MAZE_DOMAIN = [(0.0, 7.0), (0.0, 7.0)] 
 
 
-DRAW_DYNAMIC_BOUNDARY = False
+DRAW_DYNAMIC_BOUNDARY = True
 BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_small_2ob.pth')
 boundary_model = None
 if DRAW_DYNAMIC_BOUNDARY and os.path.exists(BOUNDARY_MODEL_PATH):
@@ -833,7 +833,7 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
         
         # 2. 保存图片逻辑 (确保每张都保存)
         # 文件夹路径：logs/..../all_runs_vis_small_lagcbf/
-        all_runs_dir = join(args.savepath, 'all_runs_vis_small_Res2')
+        all_runs_dir = join(args.savepath, 'all_runs_vis_small_Ros')
         makedirs(all_runs_dir)
         
         # 文件名：run_C{Case号}_R{Run号}_{状态}_score_{分数}.png

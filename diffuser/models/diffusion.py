@@ -250,8 +250,8 @@ class GaussianDiffusion(nn.Module):
         # self.safe1 = torch.min(b0[:,0] + 0.01)  # robust term 09/25
         # 1. 计算缩放因子 (Radius in Normalized Space)
         # 物理半径: Row=0.5, Col=0.5
-        yr = 2 * 0.6 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
+        yr = 2 * 0.8 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 0.8 / (self.norm_maxs[1] - self.norm_mins[1])
         
         # 2. 计算中心点偏移 (Center in Normalized Space)
         # 物理中心: Row=2.0, Col=2.0
@@ -285,8 +285,8 @@ class GaussianDiffusion(nn.Module):
         # self.safe2 = torch.min(b[:,0]+ 0.01) # robust term 09/25
         # 1. 计算缩放因子
         # 物理半径: Row=1.0 (长边), Col=0.5 (短边)
-        yr = 2 * 1.1 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
+        yr = 2 * 1.3 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 0.8 / (self.norm_maxs[1] - self.norm_mins[1])
         
         # 2. 计算中心点偏移
         # 物理中心: Row=4.5, Col=4.0
@@ -361,7 +361,7 @@ class GaussianDiffusion(nn.Module):
         off_x = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
         # 3. CBF 计算 (Quadratic: ^2)
-        b0 = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1    # robust term increased
+        b0 = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1 -0.01   # robust term increased
         Lfb = 0
         Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
         Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
@@ -402,7 +402,7 @@ class GaussianDiffusion(nn.Module):
         off_x = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
         # 3. CBF 计算 (Quartic: ^4) - 近似矩形
-        b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 # robust term
+        b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 - 0.01 # robust term
         Lfb = 0
         Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
         Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
@@ -588,10 +588,10 @@ class GaussianDiffusion(nn.Module):
         # x = self.invariance(x, xp1)    # RoS
         # x = self.invariance_cf(x, xp1)  # RoS closed form
 
-        # x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
+        x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
 
         # x = self.invariance_relax(x, xp1, t) # ReS
-        x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    
+        # x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    
         # x = self.invariance_time(x, xp1, t)   # TVS
         # x = self.invariance_time_cf(x, xp1, t)  # TVS closed form
         # x = self.invariance_relax_narrow(x, xp1, t)  # narrow passage case
