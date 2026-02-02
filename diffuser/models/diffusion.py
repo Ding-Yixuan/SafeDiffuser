@@ -231,13 +231,9 @@ class GaussianDiffusion(nn.Module):
         nBatch = x.shape[0]
         ref = xp1 - x
 
-        # 1. 计算缩放因子 (Radius in Normalized Space)
-        # 物理半径: Row=0.5, Col=0.5
+
         yr = 2 * 0.6 / (self.norm_maxs[0] - self.norm_mins[0])
         xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
-        
-        # 2. 计算中心点偏移 (Center in Normalized Space)
-        # 物理中心: Row=2.0, Col=2.0
         off_y = 2 * (2.0 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
         off_x = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
@@ -251,15 +247,11 @@ class GaussianDiffusion(nn.Module):
         k = 1
         h0 = Lfb + k*b0
 
-        self.safe1 = torch.min(b0[:,0] + 0.2)
+        self.safe1 = torch.min(b0[:,0] + 0.01)
 
-        # 1. 计算缩放因子
-        # 物理半径: Row=1.0 (长边), Col=0.5 (短边)
+
         yr = 2 * 1.1 / (self.norm_maxs[0] - self.norm_mins[0])
         xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
-        
-        # 2. 计算中心点偏移
-        # 物理中心: Row=4.5, Col=4.0
         off_y = 2 * (4.5 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
         off_x = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
@@ -269,7 +261,7 @@ class GaussianDiffusion(nn.Module):
         Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
         Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
 
-        self.safe2 = torch.min(b[:,0]+ 0.2)
+        self.safe2 = torch.min(b[:,0]+ 0.01)
 
         G1 = torch.cat([-Lgbu1, -Lgbu2], dim = 1)
         k = 1
@@ -309,11 +301,8 @@ class GaussianDiffusion(nn.Module):
         nBatch = x.shape[0]
         ref = xp1 - x
 
-        yr = 2 * 0.6 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
-        
-        # 2. 计算中心点偏移 (Center in Normalized Space)
-        # 物理中心: Row=2.0, Col=2.0
+        yr = 2 * 1 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 1 / (self.norm_maxs[1] - self.norm_mins[1])
         off_y = 2 * (2.0 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
         off_x = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
@@ -322,6 +311,8 @@ class GaussianDiffusion(nn.Module):
         Lfb = 0
         Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
         Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
+
+        self.safe1 = torch.min(b0[:,0] + 0.01)
 
         if t >= 10:   # debug  10
             sign = 100   #relax
@@ -334,14 +325,9 @@ class GaussianDiffusion(nn.Module):
         G0 = torch.cat([-Lgbu1, -Lgbu2, rx1, rx0], dim = 1)
         k = 1
         h0 = Lfb + k*b0
-        self.safe1 = torch.min(b0[:,0] + 0.2)
 
-
-        yr = 2 * 1.1 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
-        
-        # 2. 计算中心点偏移
-        # 物理中心: Row=4.5, Col=4.0
+        yr = 2 * 1.5 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 1 / (self.norm_maxs[1] - self.norm_mins[1])
         off_y = 2 * (4.5 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
         off_x = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
@@ -351,7 +337,7 @@ class GaussianDiffusion(nn.Module):
         Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
         Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
 
-        self.safe2 = torch.min(b[:,0]+ 0.2)
+        self.safe2 = torch.min(b[:,0]+ 0.01)
 
         G1 = torch.cat([-Lgbu1, -Lgbu2, rx0, rx1], dim = 1)
         k = 1
@@ -528,9 +514,9 @@ class GaussianDiffusion(nn.Module):
         # x = self.GD(x, xp1)
 
         ####################### SafeDiffusers 
-        # x = xp1 # for training only
+        x = xp1 # for training only
         # x = self.invariance(x, xp1)    # RoS
-        x = self.invariance_cf(x, xp1)  # RoS closed form
+        # x = self.invariance_cf(x, xp1)  # RoS closed form
 
         # x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
 

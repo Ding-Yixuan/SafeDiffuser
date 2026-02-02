@@ -303,22 +303,22 @@ class MazeRenderer:
         # #################################################### maze-custom-v1
         theta = np.linspace(0, 2*np.pi, 100)
         
-        # --- 障碍物 1: 小方块 (Quadratic) ---
-        # 物理: Center(Row=2.0, Col=2.0), Radius=0.5
-        # 绘图: X轴(Col)=2.0, Y轴(Row)=2.0, Divisor=7
-        x1 = (1/7) * np.cos(theta) + (2.5/7)
-        y1 = (1/7) * np.sin(theta) + (2.5/7)
-        plt.plot(x1, y1, c='red', zorder=10)
-        # plt.fill(x1, y1, "red", alpha=0.3) # 可选：填充颜色
+        # # --- 障碍物 1: 小方块 (Quadratic) ---
+        # # 物理: Center(Row=2.0, Col=2.0), Radius=0.5
+        # # 绘图: X轴(Col)=2.0, Y轴(Row)=2.0, Divisor=7
+        # x1 = (1/7) * np.cos(theta) + (2.5/7)
+        # y1 = (1/7) * np.sin(theta) + (2.5/7)
+        # plt.plot(x1, y1, c='red', zorder=10)
+        # # plt.fill(x1, y1, "red", alpha=0.3) # 可选：填充颜色
 
-        # --- 障碍物 2: 长条墙 (Quartic) ---
-        # 物理: Center(Row=4.5, Col=4.0), Radius(Row=1.0, Col=0.5)
-        # 绘图: X轴(Col)=4.0, 半径=0.5; Y轴(Row)=4.5, 半径=1.0; Divisor=7
-        # 公式: x = r * sqrt(|cos|) * sgn(cos) + c
-        x2 = (1/7) * np.sqrt(np.abs(np.cos(theta))) * np.sign(np.cos(theta)) + (4.5/7)
-        y2 = (1/7) * np.sqrt(np.abs(np.sin(theta))) * np.sign(np.sin(theta)) + (5.0/7)
-        plt.plot(x2, y2, c='red', zorder=10)
-        # plt.fill(x2, y2, "red", alpha=0.3)
+        # # --- 障碍物 2: 长条墙 (Quartic) ---
+        # # 物理: Center(Row=4.5, Col=4.0), Radius(Row=1.0, Col=0.5)
+        # # 绘图: X轴(Col)=4.0, 半径=0.5; Y轴(Row)=4.5, 半径=1.0; Divisor=7
+        # # 公式: x = r * sqrt(|cos|) * sgn(cos) + c
+        # x2 = (1/7) * np.sqrt(np.abs(np.cos(theta))) * np.sign(np.cos(theta)) + (4.5/7)
+        # y2 = (1.5/7) * np.sqrt(np.abs(np.sin(theta))) * np.sign(np.sin(theta)) + (5.0/7)
+        # plt.plot(x2, y2, c='red', zorder=10)
+        # # plt.fill(x2, y2, "red", alpha=0.3)
 
         #################################################### maze-large-v1
         # theta = np.linspace(0,2*np.pi, 100)

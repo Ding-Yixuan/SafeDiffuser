@@ -492,7 +492,7 @@ ALL_OBSTACLES = parse_maze_map(MAZE_MAP_LARGE)
 FULL_MAZE_DOMAIN = [(0.0, 7.0), (0.0, 7.0)] 
 
 
-DRAW_DYNAMIC_BOUNDARY = False
+DRAW_DYNAMIC_BOUNDARY = True
 BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_small_2ob.pth')
 boundary_model = None
 if DRAW_DYNAMIC_BOUNDARY and os.path.exists(BOUNDARY_MODEL_PATH):
@@ -822,7 +822,7 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
             per_step_min_d = []
             collided_flag = False
             min_dist_overall = float('inf')
-            COLLISION_RADIUS = 0.15 # 保持较大的 Padding 防止 NaN
+            COLLISION_RADIUS = 0.10 # 保持较大的 Padding 防止 NaN
 
         except Exception as e:
             print(f"⚠️ [初始化失败] Case {case_idx} 重置环境时出错: {e} -> 自动重试")
@@ -980,8 +980,8 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
                 # print(f"发现更安全的成功路径！MinDist: {min_dist_overall:.4f}m")
                 best_safe_margin = min_dist_overall
                 fullpath = join(args.savepath, 'best_safe_plan_global.png') 
-                renderer.composite(fullpath, current_samples, ncol=1)
-                renderer.render_diffusion(join(args.savepath, f'best_safe_diffusion_global.mp4'), current_trajectory)
+                # renderer.composite(fullpath, current_samples, ncol=1)
+                # renderer.render_diffusion(join(args.savepath, f'best_safe_diffusion_global.mp4'), current_trajectory)
 
         # 4. 统计计数
         if is_success:
@@ -999,7 +999,7 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
         n_collision_steps = sum(per_step_collisions)
 
         run_data = {
-            'algorithm': "safehardlarge", # 按需修改算法名
+            'algorithm': "cbf221", # 按需修改算法名
             'case_idx': case_idx,
             'run_idx': run_idx,
             'start_point': start_pos,
@@ -1064,7 +1064,7 @@ if len(all_run_images) > 0:
         )
         
         # filename = f'Summary_Matrix_{target_rows}Cases_x_{target_cols}Runs.png'
-        filename = f'safehardlarge.png'
+        filename = f'cbf221.png'
         
     else:
         # ⚠️ 异常情况：可能中间有些 Run 崩溃了没存下来
@@ -1086,7 +1086,7 @@ if len(all_run_images) > 0:
             cols=target_cols
         )
         # filename = f'Summary_Grid_Fallback_{target_rows}x{target_cols}.png'
-        filename = f'safehardlarge.png'
+        filename = f'cbf221.png'
 
     # 4. 保存大图
     grid_path = join(args.savepath, filename)
@@ -1095,7 +1095,7 @@ if len(all_run_images) > 0:
     
     # 💡 提示：如果图片太大看不清，可以单独去文件夹里看 all_runs_vis_small_xxx 目录
 else:
-    print("❌ 没有收集到图片，无法拼图")
+    print("没有收集到图片，无法拼图")
 # ========================================================================
 
 elbo_batch = np.array(elbo_batch)
@@ -1117,12 +1117,10 @@ else:
 
 
 
-# ==================== 💾 [新增] 保存所有数据到 PKL ====================
-# 文件名建议带上算法名字和时间戳，防止覆盖
 import datetime
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-# ⚠️ 记得修改这里的 filename 前缀，对应你当前跑的算法
-algo_name = "safehardlarge" 
+# 修改这里的 filename 前缀，对应当前跑的算法
+algo_name = "cbf221" 
 pkl_filename = f"RawData_{algo_name}_{timestamp}.pkl"
 pkl_path = join(args.savepath, pkl_filename)
 
