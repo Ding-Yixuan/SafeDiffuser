@@ -512,7 +512,7 @@ ALL_OBSTACLES = parse_maze_map(MAZE_MAP_LARGE)
 FULL_MAZE_DOMAIN = [(0.0, 7.0), (0.0, 7.0)] 
 
 
-DRAW_DYNAMIC_BOUNDARY = True
+DRAW_DYNAMIC_BOUNDARY = False
 BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_small_2ob.pth')
 boundary_model = None
 if DRAW_DYNAMIC_BOUNDARY and os.path.exists(BOUNDARY_MODEL_PATH):

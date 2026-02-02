@@ -16,11 +16,26 @@ def analyze_pickles(folder_path):
     
     # 2. 读取并合并所有数据
     for pkl_f in pkl_files:
-        print(f"📖 读取文件: {os.path.basename(pkl_f)}")
+        # print(f"📖 读取文件: {os.path.basename(pkl_f)}")
+        # with open(pkl_f, 'rb') as f:
+        #     data = pickle.load(f)
+        #     # 确保 data 是 list
+        #     if isinstance(data, list):
+        #         all_data.extend(data)
+        #     else:
+        #         print(f"⚠️ 文件 {pkl_f} 格式不对，跳过")
+        file_name = os.path.basename(pkl_f)
+        algo_name_from_file = file_name.split('_')[1] 
+
+        print(f"读取文件: {file_name} -> 强制算法名设定为: {algo_name_from_file}")
+        
         with open(pkl_f, 'rb') as f:
             data = pickle.load(f)
-            # 确保 data 是 list
+            
             if isinstance(data, list):
+                # 遍历 list 中的每一个字典，强制覆盖其 algorithm 字段
+                for item in data:
+                    item['algorithm'] = algo_name_from_file
                 all_data.extend(data)
             else:
                 print(f"⚠️ 文件 {pkl_f} 格式不对，跳过")
@@ -69,7 +84,7 @@ def analyze_pickles(folder_path):
     print(f"✅ 指标3 (轨迹长度) CSV 已保存: {csv_path_3}")
 
     # ==================== 统计计算 (Sum, Mean, Var) ====================
-    print("\n📊 === 最终统计报告 === 📊\n")
+    print("\n === 最终统计报告 === \n")
     
     stats_summary = []
 

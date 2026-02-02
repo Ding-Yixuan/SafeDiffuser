@@ -231,27 +231,10 @@ class GaussianDiffusion(nn.Module):
         nBatch = x.shape[0]
         ref = xp1 - x
 
-        # #normalize obstacle 1, x-1, y-0  x = 1/12*np.cos(theta) + 5.5/12, y = 1/9*np.sin(theta) + 5/9
-        # xr = 2*1/(self.norm_maxs[1] - self.norm_mins[1])
-        # yr = 2*1/(self.norm_maxs[0] - self.norm_mins[0])
-        # off_x = 2*(5.8-0.5 - self.norm_mins[1])/(self.norm_maxs[1] - self.norm_mins[1]) - 1
-        # off_y = 2*(5-0.5 - self.norm_mins[0])/(self.norm_maxs[0] - self.norm_mins[0]) - 1
-
-        # #CBF
-        # b0 = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1 - 0.01  # robust term 09/25
-        # Lfb = 0
-        # Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
-        # Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
-
-        # G0 = torch.cat([-Lgbu1, -Lgbu2], dim = 1)
-        # k = 1
-        # h0 = Lfb + k*b0
-
-        # self.safe1 = torch.min(b0[:,0] + 0.01)  # robust term 09/25
         # 1. 计算缩放因子 (Radius in Normalized Space)
         # 物理半径: Row=0.5, Col=0.5
-        yr = 2 * 0.8 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 0.8 / (self.norm_maxs[1] - self.norm_mins[1])
+        yr = 2 * 0.6 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
         
         # 2. 计算中心点偏移 (Center in Normalized Space)
         # 物理中心: Row=2.0, Col=2.0
@@ -259,7 +242,7 @@ class GaussianDiffusion(nn.Module):
         off_x = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
         # 3. CBF 计算 (Quadratic: ^2)
-        b0 = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1   # robust term increased
+        b0 = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1 - 0.01   # robust term increased
         Lfb = 0
         Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
         Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
@@ -268,25 +251,12 @@ class GaussianDiffusion(nn.Module):
         k = 1
         h0 = Lfb + k*b0
 
-        self.safe1 = torch.min(b0[:,0] + 0.05)
+        self.safe1 = torch.min(b0[:,0] + 0.2)
 
-        # #normalize obstacle 2,  x = 1/12*np.sqrt(np.abs(np.cos(theta)))*np.sign(np.cos(theta)) + 5.3/12, y = 1/9*np.sqrt(np.abs(np.sin(theta)))*np.sign(np.sin(theta)) + 2/9
-        # xr = 2*1/(self.norm_maxs[1] - self.norm_mins[1])
-        # yr = 2*1/(self.norm_maxs[0] - self.norm_mins[0])
-        # off_x = 2*(5.3-0.5 - self.norm_mins[1])/(self.norm_maxs[1] - self.norm_mins[1]) - 1
-        # off_y = 2*(2-0.5 - self.norm_mins[0])/(self.norm_maxs[0] - self.norm_mins[0]) - 1
-
-        # #CBF
-        # b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 - 0.01 # robust term 09/25
-        # Lfb = 0
-        # Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
-        # Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
-
-        # self.safe2 = torch.min(b[:,0]+ 0.01) # robust term 09/25
         # 1. 计算缩放因子
         # 物理半径: Row=1.0 (长边), Col=0.5 (短边)
-        yr = 2 * 1.3 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 0.8 / (self.norm_maxs[1] - self.norm_mins[1])
+        yr = 2 * 1.1 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
         
         # 2. 计算中心点偏移
         # 物理中心: Row=4.5, Col=4.0
@@ -294,12 +264,12 @@ class GaussianDiffusion(nn.Module):
         off_x = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
         # 3. CBF 计算 (Quartic: ^4) - 近似矩形
-        b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 - 0.05 # robust term
+        b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 - 0.01 # robust term
         Lfb = 0
         Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
         Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
 
-        self.safe2 = torch.min(b[:,0]+ 0.05)
+        self.safe2 = torch.min(b[:,0]+ 0.2)
 
         G1 = torch.cat([-Lgbu1, -Lgbu2], dim = 1)
         k = 1
@@ -339,21 +309,8 @@ class GaussianDiffusion(nn.Module):
         nBatch = x.shape[0]
         ref = xp1 - x
 
-        #normalize obstacle 1, x-1, y-0  x = 1/12*np.cos(theta) + 5.5/12, y = 1/9*np.sin(theta) + 5/9
-        # xr = 2*1/(self.norm_maxs[1] - self.norm_mins[1])
-        # yr = 2*1/(self.norm_maxs[0] - self.norm_mins[0])
-        # off_x = 2*(5.8-0.5 - self.norm_mins[1])/(self.norm_maxs[1] - self.norm_mins[1]) - 1
-        # off_y = 2*(5-0.5 - self.norm_mins[0])/(self.norm_maxs[0] - self.norm_mins[0]) - 1
-
-        # #CBF
-        # b = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - 1 - 0.01
-        # Lfb = 0
-        # Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
-        # Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
-
-        # self.safe1 = torch.min(b[:,0] + 0.01)
-        yr = 2 * 0.8 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 0.8 / (self.norm_maxs[1] - self.norm_mins[1])
+        yr = 2 * 0.6 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
         
         # 2. 计算中心点偏移 (Center in Normalized Space)
         # 物理中心: Row=2.0, Col=2.0
@@ -380,21 +337,8 @@ class GaussianDiffusion(nn.Module):
         self.safe1 = torch.min(b0[:,0] + 0.2)
 
 
-        #normalize obstacle 2,  x = 1/12*np.sqrt(np.abs(np.cos(theta)))*np.sign(np.cos(theta)) + 5.3/12, y = 1/9*np.sqrt(np.abs(np.sin(theta)))*np.sign(np.sin(theta)) + 2/9
-        # xr = 2*1/(self.norm_maxs[1] - self.norm_mins[1])
-        # yr = 2*1/(self.norm_maxs[0] - self.norm_mins[0])
-        # off_x = 2*(5.3-0.5 - self.norm_mins[1])/(self.norm_maxs[1] - self.norm_mins[1]) - 1
-        # off_y = 2*(2-0.5 - self.norm_mins[0])/(self.norm_maxs[0] - self.norm_mins[0]) - 1
-
-        # #CBF
-        # b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - 1 - 0.01
-        # Lfb = 0
-        # Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
-        # Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
-
-        # self.safe2 = torch.min(b[:,0] + 0.01)
-        yr = 2 * 1.3 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 0.8 / (self.norm_maxs[1] - self.norm_mins[1])
+        yr = 2 * 1.1 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
         
         # 2. 计算中心点偏移
         # 物理中心: Row=4.5, Col=4.0
@@ -586,9 +530,9 @@ class GaussianDiffusion(nn.Module):
         ####################### SafeDiffusers 
         # x = xp1 # for training only
         # x = self.invariance(x, xp1)    # RoS
-        # x = self.invariance_cf(x, xp1)  # RoS closed form
+        x = self.invariance_cf(x, xp1)  # RoS closed form
 
-        x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
+        # x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
 
         # x = self.invariance_relax(x, xp1, t) # ReS
         # x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    
