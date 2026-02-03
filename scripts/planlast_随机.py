@@ -492,7 +492,7 @@ ALL_OBSTACLES = parse_maze_map(MAZE_MAP_LARGE)
 FULL_MAZE_DOMAIN = [(0.0, 7.0), (0.0, 7.0)] 
 
 
-DRAW_DYNAMIC_BOUNDARY = True
+DRAW_DYNAMIC_BOUNDARY = False
 BOUNDARY_MODEL_PATH = join(root_dir, 'ttc_model_small_2ob.pth')
 boundary_model = None
 if DRAW_DYNAMIC_BOUNDARY and os.path.exists(BOUNDARY_MODEL_PATH):
@@ -999,7 +999,7 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
         n_collision_steps = sum(per_step_collisions)
 
         run_data = {
-            'algorithm': "cbf221", # 按需修改算法名
+            'algorithm': "lagtest", # 按需修改算法名
             'case_idx': case_idx,
             'run_idx': run_idx,
             'start_point': start_pos,
@@ -1064,7 +1064,7 @@ if len(all_run_images) > 0:
         )
         
         # filename = f'Summary_Matrix_{target_rows}Cases_x_{target_cols}Runs.png'
-        filename = f'cbf221.png'
+        filename = f'lagtest.png'
         
     else:
         # ⚠️ 异常情况：可能中间有些 Run 崩溃了没存下来
@@ -1086,7 +1086,7 @@ if len(all_run_images) > 0:
             cols=target_cols
         )
         # filename = f'Summary_Grid_Fallback_{target_rows}x{target_cols}.png'
-        filename = f'cbf221.png'
+        filename = f'lagtest.png'
 
     # 4. 保存大图
     grid_path = join(args.savepath, filename)
@@ -1120,7 +1120,7 @@ else:
 import datetime
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 # 修改这里的 filename 前缀，对应当前跑的算法
-algo_name = "cbf221" 
+algo_name = "lagtest" 
 pkl_filename = f"RawData_{algo_name}_{timestamp}.pkl"
 pkl_path = join(args.savepath, pkl_filename)
 

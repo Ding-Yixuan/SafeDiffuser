@@ -481,6 +481,73 @@ class GaussianDiffusion(nn.Module):
         
         return xp1_new.view(original_shape)
 
+    @torch.no_grad()
+    def invariance_lag_cf(self, x, xp1, t):
+        """
+        Lagrangian / Gradient-based correction (Revised)
+        """
+        # 1. 开启梯度计算
+        with torch.enable_grad():
+            xp1_in = xp1.detach().clone().requires_grad_(True)
+            
+            # --- 几何参数 (Radius=0.6) ---
+            yr_1 = 2 * 0.6 / (self.norm_maxs[0] - self.norm_mins[0])
+            xr_1 = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
+            yr_2 = 2 * 1.1 / (self.norm_maxs[0] - self.norm_mins[0])
+            xr_2 = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
+
+            off_y_1 = 2 * (2.0 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
+            off_x_1 = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
+            off_y_2 = 2 * (4.5 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
+            off_x_2 = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
+
+            # --- Barrier 计算 ---
+            # h(x) < 0 表示不安全
+            # 注意：这里取正值部分作为 Loss，即 ReLU(-h)
+            
+            # Obstacle 1 (Quadratic)
+            h1 = ((xp1_in[:,2:3] - off_y_1)/yr_1)**2 + ((xp1_in[:,3:4] - off_x_1)/xr_1)**2 - 1 - 0.01
+            
+            # Obstacle 2 (Quartic)
+            h2 = ((xp1_in[:,2:3] - off_y_2)/yr_2)**4 + ((xp1_in[:,3:4] - off_x_2)/xr_2)**4 - 1 - 0.01
+
+            # --- Loss 计算 (Sum 模式) ---
+            # 使用 sum() 保证每个样本的梯度力大小独立于 batch size
+            lag_lambda = 5.0  # 稍微调大 Lambda，代表"斥力场"的强度
+            loss = lag_lambda * (torch.relu(-h1).sum() + torch.relu(-h2).sum())
+            
+            # 初始化修正量 (全0)
+            correction = torch.zeros_like(xp1)
+
+            # --- 梯度反传 ---
+            # 修正 1: 使用 .item() 判断
+            if loss.item() > 1e-6:
+                grads = torch.autograd.grad(loss, xp1_in)[0]
+                
+                # 修正 3: 限制单步最大位移 (Clamp)
+                # 防止梯度爆炸导致小车瞬移飞出地图
+                # step_size 可以理解为"时间步长"或"学习率"
+                step_size = 0.5 
+                
+                # 计算原始推力 (负梯度方向)
+                raw_push = - step_size * grads
+                
+                # 截断推力：每次最多修正 0.05 (归一化坐标系下)
+                # 0.05 在 maze2d 里大概对应 5cm-10cm，足够了
+                clamped_push = torch.clamp(raw_push, -0.05, 0.05)
+                
+                # 修正 2: 只更新位置维度 (2:4)
+                correction[:, 2:4] = clamped_push[:, 2:4]
+            
+            # 日志 (保持你的逻辑)
+            self.safe1 = torch.min(h1.detach() + 0.01)
+            self.safe2 = torch.min(h2.detach() + 0.01)
+
+        # 应用修正
+        xp1_out = xp1 + correction
+        
+        return xp1_out
+
     
     @torch.no_grad()
     def p_sample(self, x, cond, t):
@@ -514,11 +581,12 @@ class GaussianDiffusion(nn.Module):
         # x = self.GD(x, xp1)
 
         ####################### SafeDiffusers 
-        x = xp1 # for training only
+        # x = xp1 # for training only
         # x = self.invariance(x, xp1)    # RoS
         # x = self.invariance_cf(x, xp1)  # RoS closed form
 
         # x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
+        x = self.invariance_lag_cf(x, xp1, t) # 手动构造的cbf的lagrangian修正
 
         # x = self.invariance_relax(x, xp1, t) # ReS
         # x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    
