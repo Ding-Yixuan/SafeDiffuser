@@ -146,7 +146,7 @@ if 'maze2d-custom-v1' not in gym.envs.registry.env_specs:
             'reward_type': 'dense',
             'reset_target': False,
             'ref_min_score': 41.01832,
-            'ref_max_score': 1,
+            'ref_max_score': 248.192267,
             # 指向你刚刚放进去的本地文件
             'dataset_url': 'maze2d-custom-v1-dense.hdf5' 
         }

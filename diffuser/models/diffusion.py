@@ -141,6 +141,14 @@ class GaussianDiffusion(nn.Module):
         self.loss_fn = Losses[loss_type](loss_weights, self.action_dim)
         self.neural_cbf = NeuralBarrierAdapter(device='cuda' if torch.cuda.is_available() else 'cpu')
 
+        self.plan_r1   = 0.6   # Wall 0 半径
+        self.plan_r2_x = 0.6   # Wall 1 半径 (X轴/长边)
+        self.plan_r2_y = 1.1   # Wall 1 半径 (Y轴/短边)
+
+        self.eval_r1   = 0.6   # 真实 Wall 0 半径
+        self.eval_r2_x = 0.6   # 真实 Wall 1 半径 (X轴)
+        self.eval_r2_y = 1.1   # 真实 Wall 1 半径 (Y轴)
+
     def _format_conditions(self, conditions, batch_size):
         conditions = utils.apply_dict(
             self.normalizer.normalize,
@@ -222,6 +230,45 @@ class GaussianDiffusion(nn.Module):
                 x_start=x_recon, x_t=x, t=t)
         return model_mean, posterior_variance, posterior_log_variance
     
+    def _update_safety_metrics(self, x):
+        """
+        使用固定的 Evaluation 参数计算 S-Spec 和 C-Spec。
+        该函数只负责更新 self.safe1 和 self.safe2，不修改轨迹。
+        x: [Batch, 4] 的轨迹点 (通常是 xp1 或修正后的 rt)
+        """
+        
+        # Wall 1 (S-Spec): 半径 0.6
+        yr_e1 = 2 * self.eval_r1 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr_e1 = 2 * self.eval_r1 / (self.norm_maxs[1] - self.norm_mins[1])
+        
+        # Wall 2 (C-Spec): 半径 X=0.6, Y=1.1 (注意长短轴)
+        yr_e2 = 2 * self.eval_r2_y / (self.norm_maxs[0] - self.norm_mins[0])
+        xr_e2 = 2 * self.eval_r2_x / (self.norm_maxs[1] - self.norm_mins[1])
+
+        # 偏移量 (这是地图固有属性，通常不变)
+        off_y_1 = 2 * (2.0 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
+        off_x_1 = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
+        off_y_2 = 2 * (4.5 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
+        off_x_2 = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
+
+        # ============================================================
+        # 2. 计算 Barrier 值 (只算分，不求梯度)
+        # ============================================================
+        
+        # S-Spec (Safe 1): Square ^2
+        b_eval_1 = ((x[:,2:3] - off_y_1)/yr_e1)**2 + ((x[:,3:4] - off_x_1)/xr_e1)**2 - 1 - 0.01
+        
+        # C-Spec (Safe 2): Quartic ^4
+        b_eval_2 = ((x[:,2:3] - off_y_2)/yr_e2)**4 + ((x[:,3:4] - off_x_2)/xr_e2)**4 - 1 - 0.01
+
+        # ============================================================
+        # 3. 更新全局指标
+        # ============================================================
+        # self.safe1 = torch.min(b_eval_1[:,0] + 0.01)
+        # self.safe2 = torch.min(b_eval_2[:,0] + 0.01)
+        self.safe1 = torch.min(torch.clamp(b_eval_1[:,0], max=0.0))
+        self.safe2 = torch.min(torch.clamp(b_eval_2[:,0], max=0.0))
+    
     @torch.no_grad()   #only for sampling
     def invariance_cf(self, x, xp1):  # closed form solution,  RoS-diffuser for maze2d-large-v1
 
@@ -232,8 +279,8 @@ class GaussianDiffusion(nn.Module):
         ref = xp1 - x
 
 
-        yr = 2 * 0.6 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
+        yr = 2 * self.plan_r1 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * self.plan_r1 / (self.norm_maxs[1] - self.norm_mins[1])
         off_y = 2 * (2.0 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
         off_x = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
@@ -247,11 +294,11 @@ class GaussianDiffusion(nn.Module):
         k = 1
         h0 = Lfb + k*b0
 
-        self.safe1 = torch.min(b0[:,0] + 0.01)
+        # self.safe1 = torch.min(b0[:,0] + 0.01)
 
 
-        yr = 2 * 1.1 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
+        yr = 2 * self.plan_r2_y / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * self.plan_r2_x / (self.norm_maxs[1] - self.norm_mins[1])
         off_y = 2 * (4.5 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
         off_x = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
@@ -261,7 +308,7 @@ class GaussianDiffusion(nn.Module):
         Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
         Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
 
-        self.safe2 = torch.min(b[:,0]+ 0.01)
+        # self.safe2 = torch.min(b[:,0]+ 0.01)
 
         G1 = torch.cat([-Lgbu1, -Lgbu2], dim = 1)
         k = 1
@@ -288,6 +335,8 @@ class GaussianDiffusion(nn.Module):
         out = lambda1*y1_bar + lambda2*y2_bar + u_bar
         rt = xp1.clone()      
         rt[:,2:4] = x[:,2:4] + out
+
+        self._update_safety_metrics(rt)
         # print(out)
         rt = rt.unsqueeze(0)
         return rt
@@ -301,8 +350,8 @@ class GaussianDiffusion(nn.Module):
         nBatch = x.shape[0]
         ref = xp1 - x
 
-        yr = 2 * 1 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 1 / (self.norm_maxs[1] - self.norm_mins[1])
+        yr = 2 * self.plan_r1 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * self.plan_r1 / (self.norm_maxs[1] - self.norm_mins[1])
         off_y = 2 * (2.0 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
         off_x = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
@@ -312,7 +361,7 @@ class GaussianDiffusion(nn.Module):
         Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
         Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
 
-        self.safe1 = torch.min(b0[:,0] + 0.01)
+        # self.safe1 = torch.min(b0[:,0] + 0.01)
 
         if t >= 10:   # debug  10
             sign = 100   #relax
@@ -326,8 +375,8 @@ class GaussianDiffusion(nn.Module):
         k = 1
         h0 = Lfb + k*b0
 
-        yr = 2 * 1.5 / (self.norm_maxs[0] - self.norm_mins[0])
-        xr = 2 * 1 / (self.norm_maxs[1] - self.norm_mins[1])
+        yr = 2 * self.plan_r2_y / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * self.plan_r2_x / (self.norm_maxs[1] - self.norm_mins[1])
         off_y = 2 * (4.5 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
         off_x = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
@@ -337,7 +386,7 @@ class GaussianDiffusion(nn.Module):
         Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
         Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
 
-        self.safe2 = torch.min(b[:,0]+ 0.01)
+        # self.safe2 = torch.min(b[:,0]+ 0.01)
 
         G1 = torch.cat([-Lgbu1, -Lgbu2, rx0, rx1], dim = 1)
         k = 1
@@ -367,119 +416,83 @@ class GaussianDiffusion(nn.Module):
         out = lambda1*y1_bar + lambda2*y2_bar + u_bar
         rt = xp1.clone()    
         rt[:,2:4] = x[:,2:4] + out[:,0:2]
+        self._update_safety_metrics(rt)
         # print(out)
         rt = rt.unsqueeze(0)
         return rt
     
+    @torch.no_grad()   #only for sampling
+    def invariance_time_cf(self, x, xp1, t):  # closed-form solution, TVS-diffuser for maze2d-large-v1
+        t_bias = 5  #50 
 
-    @torch.no_grad()
-    def invariance_neural(self, x, xp1):
-        """
-        基于 TTC 神经网络的避障修正
-        """
-        if not hasattr(self, 'neural_cbf'):
-            return xp1
+        x = x.squeeze(0)
+        xp1 = xp1.squeeze(0)
 
-        config = getattr(self, 'cbf_config', {})
-        # 读取 Alpha (力度)
-        # alpha = config.get('alpha', 0.05) 
-        # 读取 Clip (截断)
-        # clip_value = config.get('clip', 0.01)
-        # 读取 Threshold (警戒线)
-        # threshold = config.get('threshold', 0.05)
-        alpha = config.get('alpha', 0.05) 
-        clip_value = config.get('clip', 0.01)
-        threshold = config.get('threshold', 0)
-        # 1. 准备数据
-        original_shape = xp1.shape
-        xp1_flat = xp1.view(-1, xp1.shape[-1])
-        
-        # 2. 准备归一化参数
-        if isinstance(self.norm_mins, torch.Tensor):
-            mins = self.norm_mins.clone().detach().to(xp1.device)
-            maxs = self.norm_maxs.clone().detach().to(xp1.device)
-        else:
-            mins = torch.tensor(self.norm_mins, device=xp1.device, dtype=torch.float32)
-            maxs = torch.tensor(self.norm_maxs, device=xp1.device, dtype=torch.float32)
-            
-        width = maxs - mins
-        
-        # 3. 反归一化
-        norm_pos = xp1_flat[:, 2:4]
-        norm_vel = xp1_flat[:, 4:6]
-        
-        if len(mins) == 4:
-            param_pos_idx = slice(0, 2)
-            param_vel_idx = slice(2, 4)
-        else:
-            param_pos_idx = slice(2, 4)
-            param_vel_idx = slice(4, 6)
-        
-        phys_pos = (norm_pos + 1) / 2 * width[param_pos_idx] + mins[param_pos_idx]
-        phys_vel = (norm_vel + 1) / 2 * width[param_vel_idx] + mins[param_vel_idx]
-        
-        phys_state = torch.cat([phys_pos, phys_vel], dim=1)
+        nBatch = x.shape[0]
+        ref = xp1 - x
 
-        # 4. 获取梯度
-        h_val, grad_phys = self.neural_cbf.get_correction_gradient(phys_state)
-        min_h_val, min_idx = torch.min(h_val, dim=0)
-        
-        # 只有当机器人靠近任意墙壁 (h < 0.5，大概在墙壁周围 0.65 米范围内) 时才打印
-        if min_h_val.item() < 0.5:
-            idx = min_idx.item()
-            p_x, p_y = phys_pos[idx, 0].item(), phys_pos[idx, 1].item()
-            v_x, v_y = phys_vel[idx, 0].item(), phys_vel[idx, 1].item()
-            
-            # X 现在是 Row，Y 是 Col
-            # print(f"靠近障碍-坐标(Row:{p_x:.2f}, Col:{p_y:.2f}) | 速度({v_x:.2f}, {v_y:.2f}) -> h={min_h_val.item():.3f}")
+        #normalize obstacle 1, x-1, y-0  x = 1/12*np.cos(theta) + 5.5/12, y = 1/9*np.sin(theta) + 5/9
+        yr = 2 * self.plan_r1 / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * self.plan_r1 / (self.norm_maxs[1] - self.norm_mins[1])
+        off_y = 2 * (2.0 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
+        off_x = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
+        #CBF
+        b = ((x[:,2:3] - off_y)/yr)**2 + ((x[:,3:4] - off_x)/xr)**2 - nn.Sigmoid()(t_bias - t) -0.01
+        Lfb = nn.Sigmoid()(t_bias - t)*(1 - nn.Sigmoid()(t_bias - t))
+        Lgbu1 = 2*((x[:,2:3] - off_y)/yr)/yr
+        Lgbu2 = 2*((x[:,3:4] - off_x)/xr)/xr
 
-        # 5.  梯度修正逻辑
-        
-        # 将物理梯度映射回 Normalized 空间
-        # grad_norm 代表：为了让 h 增加 1，归一化坐标需要移动多少
-        scale = width[param_pos_idx] / 2
-        grad_norm = grad_phys * scale
-          
-        # 计算原始修正量：危险大 -> 梯度大 -> 修正大
-        raw_delta = grad_norm * alpha
-        
-        # 截断 (Clamping) - 防止瞬移
-        delta = torch.clamp(raw_delta, -clip_value, clip_value)
-        
-        # 只在不安全时修正
-        is_unsafe = (h_val < threshold).float()
-        
-        # 最终修正量
-        delta = delta * is_unsafe
-        # delta = delta
+        # self.safe1 = torch.min(b[:,0] + 0.01)
 
-        if is_unsafe.sum() > 0:
-            # 计算每个点被推移的欧几里得距离 (Norm)
-            delta_norm = torch.linalg.norm(delta, dim=1) 
-            
-            # 过滤出真正被修改了的点 (delta > 0)
-            active_mask = delta_norm > 1e-7 
-            num_modified = active_mask.sum().item()
-            
-            if num_modified > 0:
-                active_deltas = delta_norm[active_mask]
-                max_delta = active_deltas.max().item()
-                mean_delta = active_deltas.mean().item()
-                
-                # print(f"[CBF]触发危险，修改了 {num_modified} 个轨迹路点.\n")
-                # print(f"推力大小 (Delta): 最大 = {max_delta:.5f}, 平均 = {mean_delta:.5f}")
+        G0 = torch.cat([-Lgbu1, -Lgbu2], dim = 1)
+        k = 1  #0.3
+        h0 = Lfb + k*b
 
-        # 6. 调试打印
-        # if is_unsafe.sum() > 0:
-        #    idx = torch.where(is_unsafe)[0][0]
-        #    print(f"Danger! h={h_val[idx].item():.2f} | Delta={delta[idx].cpu().numpy()}")
+        #normalize obstacle 2,  x = 1/12*np.sqrt(np.abs(np.cos(theta)))*np.sign(np.cos(theta)) + 5.3/12, y = 1/9*np.sqrt(np.abs(np.sin(theta)))*np.sign(np.sin(theta)) + 2/9
+        yr = 2 * self.plan_r2_y / (self.norm_maxs[0] - self.norm_mins[0])
+        xr = 2 * self.plan_r2_x / (self.norm_maxs[1] - self.norm_mins[1])
+        off_y = 2 * (4.5 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
+        off_x = 2 * (4.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
 
-        # 7. 应用修正
-        xp1_new = xp1_flat.clone()
-        xp1_new[:, 2:4] += delta
+        #CBF
+        b = ((x[:,2:3] - off_y)/yr)**4 + ((x[:,3:4] - off_x)/xr)**4 - nn.Sigmoid()(t_bias - t) - 0.01
+        Lfb = nn.Sigmoid()(t_bias - t)*(1 - nn.Sigmoid()(t_bias - t))
+        Lgbu1 = 4*((x[:,2:3] - off_y)/yr)**3/yr
+        Lgbu2 = 4*((x[:,3:4] - off_x)/xr)**3/xr
+
+        # self.safe2 = torch.min(b[:,0] + 0.01)
+
+        G1 = torch.cat([-Lgbu1, -Lgbu2], dim = 1)
+        k = 1  #0.4
+        h1 = Lfb + k*b
         
-        return xp1_new.view(original_shape)
+   
+        q = -ref[:,2:4].to(G0.device)
+
+        y1_bar = 1*G0  # H or Q = identity matrix
+        y2_bar = 1*G1
+        u_bar = -1*q
+        p1_bar = h0 - torch.sum(G0*u_bar,dim = 1).unsqueeze(1)
+        p2_bar = h1 - torch.sum(G1*u_bar,dim = 1).unsqueeze(1)
+
+        G = torch.cat([torch.sum(y1_bar*y1_bar,dim = 1).unsqueeze(1).unsqueeze(0), torch.sum(y1_bar*y2_bar,dim = 1).unsqueeze(1).unsqueeze(0), torch.sum(y2_bar*y1_bar,dim = 1).unsqueeze(1).unsqueeze(0), torch.sum(y2_bar*y2_bar,dim = 1).unsqueeze(1).unsqueeze(0)], dim = 0)
+        #G = 1*[y1_bar*y1_bar', y1_bar*y2_bar'; y2_bar*y1_bar', y2_bar*y2_bar']
+        w_p1_bar = torch.clamp(p1_bar, max=0)
+        w_p2_bar = torch.clamp(p2_bar, max=0)
+
+        # G 0-(1,1), 1-(1,2), 2-(2,1), 3-(2,2)
+        lambda1 = torch.where(G[2]*w_p2_bar < G[3]*p1_bar, torch.zeros_like(p1_bar), torch.where(G[1]*w_p1_bar < G[0]*p2_bar, w_p1_bar/G[0], torch.clamp(G[3]*p1_bar - G[2]*p2_bar, max=0)/(G[0]*G[3] - G[1]*G[2])))
+        
+        lambda2 = torch.where(G[2]*w_p2_bar < G[3]*p1_bar, w_p2_bar/G[3], torch.where(G[1]*w_p1_bar < G[0]*p2_bar, torch.zeros_like(p1_bar), torch.clamp(G[0]*p2_bar - G[1]*p1_bar, max=0)/(G[0]*G[3] - G[1]*G[2])))
+
+        out = lambda1*y1_bar + lambda2*y2_bar + u_bar
+        rt = xp1.clone()    
+        rt[:,2:4] = x[:,2:4] + out
+        self._update_safety_metrics(rt)
+        # print(out)
+        rt = rt.unsqueeze(0)
+        return rt        
 
     @torch.no_grad()
     def invariance_lag_cf(self, x, xp1, t):
@@ -491,10 +504,10 @@ class GaussianDiffusion(nn.Module):
             xp1_in = xp1.detach().clone().requires_grad_(True)
             
             # --- 几何参数 (Radius=0.6) ---
-            yr_1 = 2 * 0.6 / (self.norm_maxs[0] - self.norm_mins[0])
-            xr_1 = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
-            yr_2 = 2 * 1.1 / (self.norm_maxs[0] - self.norm_mins[0])
-            xr_2 = 2 * 0.6 / (self.norm_maxs[1] - self.norm_mins[1])
+            yr_1 = 2 * self.plan_r1 / (self.norm_maxs[0] - self.norm_mins[0])
+            xr_1 = 2 * self.plan_r1 / (self.norm_maxs[1] - self.norm_mins[1])
+            yr_2 = 2 * self.plan_r2_y / (self.norm_maxs[0] - self.norm_mins[0])
+            xr_2 = 2 * self.plan_r2_x / (self.norm_maxs[1] - self.norm_mins[1])
 
             off_y_1 = 2 * (2.0 - self.norm_mins[0]) / (self.norm_maxs[0] - self.norm_mins[0]) - 1
             off_x_1 = 2 * (2.0 - self.norm_mins[1]) / (self.norm_maxs[1] - self.norm_mins[1]) - 1
@@ -540,11 +553,12 @@ class GaussianDiffusion(nn.Module):
                 correction[:, 2:4] = clamped_push[:, 2:4]
             
             # 日志 (保持你的逻辑)
-            self.safe1 = torch.min(h1.detach() + 0.01)
-            self.safe2 = torch.min(h2.detach() + 0.01)
+            # self.safe1 = torch.min(h1.detach() + 0.01)
+            # self.safe2 = torch.min(h2.detach() + 0.01)
 
         # 应用修正
         xp1_out = xp1 + correction
+        self._update_safety_metrics(xp1_out)
         
         return xp1_out
 
@@ -558,11 +572,15 @@ class GaussianDiffusion(nn.Module):
         nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
 
         xp1 = model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
+        
 
         # Note:  choose any one of the below
         #---------------------------------------start--------------------------------------------------#
         ####################### original diffuser only
-        # x = xp1      
+        x = xp1  
+        self._update_safety_metrics(x.squeeze(0) if x.ndim > 2 else x)
+        # 
+        #     
         # xr = 2*1/(self.norm_maxs[1] - self.norm_mins[1])
         # yr = 2*1/(self.norm_maxs[0] - self.norm_mins[0])
         # off_x = 2*(5.8-0.5 - self.norm_mins[1])/(self.norm_maxs[1] - self.norm_mins[1]) - 1
@@ -586,7 +604,7 @@ class GaussianDiffusion(nn.Module):
         # x = self.invariance_cf(x, xp1)  # RoS closed form
 
         # x = self.invariance_neural(x, xp1) # 使用新的 TTC 神经避障
-        x = self.invariance_lag_cf(x, xp1, t) # 手动构造的cbf的lagrangian修正
+        # x = self.invariance_lag_cf(x, xp1, t) # 手动构造的cbf的lagrangian修正
 
         # x = self.invariance_relax(x, xp1, t) # ReS
         # x = self.invariance_relax_cf(x, xp1, t)   #ReS closed form    

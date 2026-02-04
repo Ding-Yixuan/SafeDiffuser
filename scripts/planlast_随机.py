@@ -1,13 +1,12 @@
 
 '''
 PYTHONPATH=. python scripts/plan_safe.py \
-    --config config.maze2d \
-    --dataset maze2d-custom-v1 \
     --horizon 256 \
     --n_diffusion_steps 128 \
     --diffusion_epoch 0
 '''
 # python scripts/plan_maze2d.py --config config.maze2d --dataset maze2d-large-v1
+# PYTHONPATH=. python scripts/planlast_随机.py --logbase logs --dataset maze2d-custom-v1 --diffusion_loadpath diffusion/H256_T128_diffuser --diffusion_epoch latest
 import pickle
 import argparse
 import os
@@ -43,10 +42,10 @@ from diffuser.models.cbf_adapter import NeuralBarrierAdapter
 #export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia-515
 #export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/wei/.mujoco/mujoco200/bin
 #python scripts/plan_maze2d.py --config config.maze2d --dataset maze2d-large-v1
-
+algo_name = "Diffusertest" 
 
 class Parser(utils.Parser):
-    dataset: str = 'maze2d-umaze-v1'
+    dataset: str = 'maze2d-custom-v1'
     config: str = 'config.maze2d'
 
 
@@ -87,6 +86,26 @@ else:
 # ==========================================================
 
 policy = Policy(diffusion, dataset.normalizer)
+
+# 🔥 [修正后的预热代码]
+print("\n🔥 正在预热 GPU (Warmup)...")
+with torch.no_grad():
+    # 注意：这里去掉那个多余的括号，让它变成 1维 (shape: [4])
+    dummy_obs = np.zeros(diffusion.observation_dim) 
+    
+    # 构造条件：起点和终点
+    dummy_cond = {
+        0: dummy_obs,
+        diffusion.horizon - 1: dummy_obs
+    }
+    
+    try:
+        # 跑 2 次让 CUDA 内核加载并完成初始化
+        for _ in range(2):
+            _ = policy(dummy_cond, batch_size=1)
+        print("✅ 预热完成，开始正式评测！\n")
+    except Exception as e:
+        print(f"⚠️ 预热跳过 (可能是维度对齐问题): {e}")
 
 def makedirs(dirname):
     if not os.path.exists(dirname):
@@ -763,7 +782,7 @@ REPEATS_PER_CASE = 5  # 每个 Case 跑 10 次
 # NUM_CASES = len(test_cases)
 
 # 随机生成的情况
-NUM_CASES = 200
+NUM_CASES = 1000
 test_cases = generate_test_cases(NUM_CASES, seed=2024) 
 TOTAL_RUNS = NUM_CASES * REPEATS_PER_CASE
 all_raw_results = []
@@ -831,6 +850,8 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
         # --- 单次运行的主循环 (Time Steps) ---
         inference_times_this_run = []
         min_spec_list = []
+        s_spec_list = [] 
+        c_spec_list = []
         for t in range(env.max_episode_steps):
             state = env.state_vector().copy()
 
@@ -842,6 +863,10 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
                     # 规划一次计时
                     start_time = time.time()
                     action, samples, diffusion_paths, _, _, elbo = policy(cond, batch_size=args.batch_size)
+                    if hasattr(diffusion, 'safe1'):
+                        s_spec_list.append(diffusion.safe1.item())
+                    if hasattr(diffusion, 'safe2'):
+                        c_spec_list.append(diffusion.safe2.item())
                     end_time = time.time()
                     comp_time.append(end_time - start_time)
                     inference_times_this_run.append(end_time - start_time)
@@ -948,51 +973,51 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
         # 3. 更新最佳记录
         # 2. 保存图片逻辑 (确保每张都保存)
         # 文件夹路径：logs/..../all_runs_vis_small_lagcbf/
-        all_runs_dir = join(args.savepath, 'runtest')
-        makedirs(all_runs_dir)
+        # all_runs_dir = join(args.savepath, 'runtest')
+        # makedirs(all_runs_dir)
         
-        # 文件名：run_C{Case号}_R{Run号}_{状态}_score_{分数}.png
-        # 这样每个 Case 的每次 Run 都会是一个独立的文件，不会被覆盖
-        img_filename = f'run_C{case_idx}_R{run_idx}_{status_str}_score_{score:.2f}.png'
-        save_path_full = join(all_runs_dir, img_filename)
+        # # 文件名：run_C{Case号}_R{Run号}_{状态}_score_{分数}.png
+        # # 这样每个 Case 的每次 Run 都会是一个独立的文件，不会被覆盖
+        # img_filename = f'run_C{case_idx}_R{run_idx}_{status_str}_score_{score:.2f}.png'
+        # save_path_full = join(all_runs_dir, img_filename)
 
-        if DRAW_DYNAMIC_BOUNDARY and boundary_model is not None:
-            save_runs_with_boundary(
-                save_path_full,
-                current_samples, # 这里用 diffusion 生成的样本轨迹
-                renderer,
-                args.dataset,
-                boundary_model,
-                run_velocity,
-                FULL_MAZE_DOMAIN, 
-                ALL_OBSTACLES,    
-                ncol=1,
-            )
-        else:
-            # 如果不画边界，就用普通的 render
-            # 注意：renderer.composite 通常画的是 diffusion 的 plan (current_samples)
-            # 如果你想画实际走出来的轨迹 (rollout)，需要转换一下格式
-            # 这里保持原逻辑，画 current_samples (模型规划出的轨迹)
-            renderer.composite(save_path_full, current_samples, ncol=1)
+        # if DRAW_DYNAMIC_BOUNDARY and boundary_model is not None:
+        #     save_runs_with_boundary(
+        #         save_path_full,
+        #         current_samples, # 这里用 diffusion 生成的样本轨迹
+        #         renderer,
+        #         args.dataset,
+        #         boundary_model,
+        #         run_velocity,
+        #         FULL_MAZE_DOMAIN, 
+        #         ALL_OBSTACLES,    
+        #         ncol=1,
+        #     )
+        # else:
+        #     # 如果不画边界，就用普通的 render
+        #     # 注意：renderer.composite 通常画的是 diffusion 的 plan (current_samples)
+        #     # 如果你想画实际走出来的轨迹 (rollout)，需要转换一下格式
+        #     # 这里保持原逻辑，画 current_samples (模型规划出的轨迹)
+        #     renderer.composite(save_path_full, current_samples, ncol=1)
 
-        try:
-            # 直接读取刚刚保存好的这一张图
-            img_data = imageio.imread(save_path_full)
+        # try:
+        #     # 直接读取刚刚保存好的这一张图
+        #     img_data = imageio.imread(save_path_full)
             
-            # 确保图片没有 Alpha 通道 (如果是4通道转3通道，防止拼接报错)
-            if img_data.shape[-1] == 4:
-                img_data = img_data[..., :3]
+        #     # 确保图片没有 Alpha 通道 (如果是4通道转3通道，防止拼接报错)
+        #     if img_data.shape[-1] == 4:
+        #         img_data = img_data[..., :3]
                 
-            all_run_images.append(img_data)
-        except Exception as e:
-            print(f"⚠️ 收集拼图失败: {e}")
-        if is_success:
-            if min_dist_overall > best_safe_margin:
-                # print(f"发现更安全的成功路径！MinDist: {min_dist_overall:.4f}m")
-                best_safe_margin = min_dist_overall
-                fullpath = join(args.savepath, 'best_safe_plan_global.png') 
-                # renderer.composite(fullpath, current_samples, ncol=1)
-                # renderer.render_diffusion(join(args.savepath, f'best_safe_diffusion_global.mp4'), current_trajectory)
+        #     all_run_images.append(img_data)
+        # except Exception as e:
+        #     print(f"⚠️ 收集拼图失败: {e}")
+        # if is_success:
+        #     if min_dist_overall > best_safe_margin:
+        #         # print(f"发现更安全的成功路径！MinDist: {min_dist_overall:.4f}m")
+        #         best_safe_margin = min_dist_overall
+        #         fullpath = join(args.savepath, 'best_safe_plan_global.png') 
+        #         # renderer.composite(fullpath, current_samples, ncol=1)
+        #         # renderer.render_diffusion(join(args.savepath, f'best_safe_diffusion_global.mp4'), current_trajectory)
 
         # 4. 统计计数
         if is_success:
@@ -1021,9 +1046,18 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
         dists = np.linalg.norm(diffs, axis=1)
         path_length = np.sum(dists)
         n_collision_steps = sum(per_step_collisions)
+        if len(s_spec_list) > 0:
+            s_spec_val = min(s_spec_list)
+        else:
+            s_spec_val = -999.0
+
+        if len(c_spec_list) > 0:
+            c_spec_val = min(c_spec_list)
+        else:
+            c_spec_val = -999.0
 
         run_data = {
-            'algorithm': "lagtest", # 按需修改算法名
+            'algorithm': algo_name, 
             'case_idx': case_idx,
             'run_idx': run_idx,
             'start_point': start_pos,
@@ -1035,7 +1069,8 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
             'score': score,
 
             'observations': traj_xy,
-            'min_spec': min_spec_val,      # 存安全评分
+            's_spec': s_spec_val,  
+            'c_spec': c_spec_val,      # 存安全评分
             'inference_time': avg_inf_time # 存推理时间
         }
         all_raw_results.append(run_data)
@@ -1063,68 +1098,68 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
         run_idx += 1
         global_iter += 1
 
-# ==================== 【修改】生成 Case x Repeat 的矩阵拼图 ====================
-print("\n正在生成最终汇总拼图...")
-if len(all_run_images) > 0:
-    import einops
+# # ==================== 【修改】生成 Case x Repeat 的矩阵拼图 ====================
+# print("\n正在生成最终汇总拼图...")
+# if len(all_run_images) > 0:
+#     import einops
     
-    # 1. 堆叠成 numpy 数组 (Total, H, W, C)
-    stack_imgs = np.stack(all_run_images) 
+#     # 1. 堆叠成 numpy 数组 (Total, H, W, C)
+#     stack_imgs = np.stack(all_run_images) 
     
-    # 2. 动态设定行列
-    # 行数 = 你的 Case 数量 (6)
-    # 列数 = 你的重复次数 (10)
-    # 注意：这两个变量应该在你的脚本开头定义过
-    target_rows = NUM_CASES        
-    target_cols = REPEATS_PER_CASE 
+#     # 2. 动态设定行列
+#     # 行数 = 你的 Case 数量 (6)
+#     # 列数 = 你的重复次数 (10)
+#     # 注意：这两个变量应该在你的脚本开头定义过
+#     target_rows = NUM_CASES        
+#     target_cols = REPEATS_PER_CASE 
     
-    expected_count = target_rows * target_cols
-    real_count = len(stack_imgs)
+#     expected_count = target_rows * target_cols
+#     real_count = len(stack_imgs)
     
-    if real_count == expected_count:
-        # ✅ 完美情况：图片数量正好等于 6 * 10
-        # 逻辑: (Case Run) 高 宽 通道 -> (Case 高) (Run 宽) 通道
-        grid_image = einops.rearrange(
-            stack_imgs, 
-            '(case run) h w c -> (case h) (run w) c', 
-            case=target_rows, 
-            run=target_cols
-        )
+#     if real_count == expected_count:
+#         # ✅ 完美情况：图片数量正好等于 6 * 10
+#         # 逻辑: (Case Run) 高 宽 通道 -> (Case 高) (Run 宽) 通道
+#         grid_image = einops.rearrange(
+#             stack_imgs, 
+#             '(case run) h w c -> (case h) (run w) c', 
+#             case=target_rows, 
+#             run=target_cols
+#         )
         
-        # filename = f'Summary_Matrix_{target_rows}Cases_x_{target_cols}Runs.png'
-        filename = f'lagtest.png'
+#         # filename = f'Summary_Matrix_{target_rows}Cases_x_{target_cols}Runs.png'
+#         filename = f'{algo_name}.png'
         
-    else:
-        # ⚠️ 异常情况：可能中间有些 Run 崩溃了没存下来
-        print(f"⚠️ 图片数量 ({real_count}) 与实验设定 ({target_rows}x{target_cols}={expected_count}) 不匹配，回退到自动布局。")
-        # 自动算一个近似正方形的布局
-        target_cols = int(np.ceil(np.sqrt(real_count)))
-        target_rows = int(np.ceil(real_count / target_cols))
+#     else:
+#         # ⚠️ 异常情况：可能中间有些 Run 崩溃了没存下来
+#         print(f"⚠️ 图片数量 ({real_count}) 与实验设定 ({target_rows}x{target_cols}={expected_count}) 不匹配，回退到自动布局。")
+#         # 自动算一个近似正方形的布局
+#         target_cols = int(np.ceil(np.sqrt(real_count)))
+#         target_rows = int(np.ceil(real_count / target_cols))
         
-        # 补黑帧
-        pad_num = target_rows * target_cols - real_count
-        if pad_num > 0:
-            padding = np.zeros((pad_num, *stack_imgs.shape[1:]), dtype=stack_imgs.dtype)
-            stack_imgs = np.concatenate([stack_imgs, padding], axis=0)
+#         # 补黑帧
+#         pad_num = target_rows * target_cols - real_count
+#         if pad_num > 0:
+#             padding = np.zeros((pad_num, *stack_imgs.shape[1:]), dtype=stack_imgs.dtype)
+#             stack_imgs = np.concatenate([stack_imgs, padding], axis=0)
             
-        grid_image = einops.rearrange(
-            stack_imgs, 
-            '(rows cols) h w c -> (rows h) (cols w) c', 
-            rows=target_rows, 
-            cols=target_cols
-        )
-        # filename = f'Summary_Grid_Fallback_{target_rows}x{target_cols}.png'
-        filename = f'lagtest.png'
+#         grid_image = einops.rearrange(
+#             stack_imgs, 
+#             '(rows cols) h w c -> (rows h) (cols w) c', 
+#             rows=target_rows, 
+#             cols=target_cols
+#         )
+#         # filename = f'Summary_Grid_Fallback_{target_rows}x{target_cols}.png'
+#         filename = f'{algo_name}.png'
 
-    # 4. 保存大图
-    grid_path = join(args.savepath, filename)
-    imageio.imsave(grid_path, grid_image)
-    print(f"✅ 最终拼图已保存: {grid_path}")
+#     # 4. 保存大图
+#     grid_path = join(args.savepath, filename)
+#     imageio.imsave(grid_path, grid_image)
+#     print(f"✅ 最终拼图已保存: {grid_path}")
     
-    # 💡 提示：如果图片太大看不清，可以单独去文件夹里看 all_runs_vis_small_xxx 目录
-else:
-    print("没有收集到图片，无法拼图")
-# ========================================================================
+#     # 💡 提示：如果图片太大看不清，可以单独去文件夹里看 all_runs_vis_small_xxx 目录
+# else:
+#     print("没有收集到图片，无法拼图")
+# # ========================================================================
 
 elbo_batch = np.array(elbo_batch)
 print("elbo mean: ", np.mean(elbo_batch))
@@ -1148,7 +1183,7 @@ else:
 import datetime
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 # 修改这里的 filename 前缀，对应当前跑的算法
-algo_name = "lagtest" 
+
 pkl_filename = f"RawData_{algo_name}_{timestamp}.pkl"
 pkl_path = join(args.savepath, pkl_filename)
 

@@ -90,7 +90,8 @@ def analyze_pickles(folder_path):
         ('is_collision',    'Metric_Collision_Bool.csv',  '是否碰撞 (0/1)'),
         ('collision_steps', 'Metric_Collision_Steps.csv', '碰撞步数'),
         ('max_step_dist',   'Metric_Max_Step_Dist.csv',   '最大单步跳跃距离'),
-        ('min_spec',        'Metric_Spec_Score.csv',      'Spec安全评分(最小值)'),
+        ('s_spec',          'Metric_S_Spec.csv',          'S-Spec安全评分(圆形)'),
+        ('c_spec',          'Metric_C_Spec.csv',          'C-Spec安全评分(矩形)'),
         ('normalized_score','Metric_Normalized_Score.csv','归一化得分'),
         ('inference_time',  'Metric_Inference_Time.csv',  '推理时间(秒)')
     ]
@@ -130,7 +131,8 @@ def analyze_pickles(folder_path):
         metric_map = {
             'collision_steps': 'Avg Coll Steps',
             'max_step_dist':   'Max Step Dist (m)',
-            'min_spec':        'Avg Min Spec',
+            's_spec':          'Avg S-Spec', 
+            'c_spec':          'Avg C-Spec', 
             'normalized_score':'Avg Score',
             'inference_time':  'Avg Time (s)'
         }
@@ -140,7 +142,7 @@ def analyze_pickles(folder_path):
                 mean_val = sub_df[col].mean()
                 std_val = sub_df[col].std()
                 # 格式化为 "均值 ± 标准差"
-                algo_stats[label] = f"{mean_val:.4f} ± {std_val:.4f}"
+                algo_stats[label] = f"{mean_val:.4e} ± {std_val:.4e}"
             else:
                 algo_stats[label] = "N/A"
         
