@@ -829,17 +829,28 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
             continue # 直接跳过，重试这一局
 
         # --- 单次运行的主循环 (Time Steps) ---
+        inference_times_this_run = []
+        min_spec_list = []
         for t in range(env.max_episode_steps):
             state = env.state_vector().copy()
 
-            # Diffusion 规划部分 (通常不会炸，但也包起来比较安全)
+            # Diffusion 规划部分
             try:
                 if t == 0:
                     cond[0] = observation
+
+                    # 规划一次计时
                     start_time = time.time()
                     action, samples, diffusion_paths, _, _, elbo = policy(cond, batch_size=args.batch_size)
                     end_time = time.time()
                     comp_time.append(end_time - start_time)
+                    inference_times_this_run.append(end_time - start_time)
+
+                    current_s_spec = diffusion.safe1.item()
+                    current_c_spec = diffusion.safe2.item()
+                    step_min_spec = min(current_s_spec, current_c_spec)
+                    min_spec_list.append(step_min_spec)
+
                     elbo_batch.append(elbo)
                     
                     current_trajectory = diffusion_paths[0]
@@ -993,6 +1004,19 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
         # 5. 收集数据 (PKL)
         traj_stack = np.stack(rollout) 
         traj_xy = traj_stack[:, :2]
+
+        if len(min_spec_list) > 0:
+            # 取整局游戏中，所有规划步里最危险的那一次的值
+            min_spec_val = min(min_spec_list) 
+        else:
+            min_spec_val = -999.0 # 异常值
+
+        # 计算平均推理时间
+        if len(inference_times_this_run) > 0:
+            avg_inf_time = np.mean(inference_times_this_run)
+        else:
+            avg_inf_time = 0.0
+
         diffs = traj_xy[1:] - traj_xy[:-1]
         dists = np.linalg.norm(diffs, axis=1)
         path_length = np.sum(dists)
@@ -1009,6 +1033,10 @@ for case_idx, (start_pos, goal_pos) in enumerate(test_cases):
             'path_length': path_length,
             'is_success': 1 if is_success else 0,
             'score': score,
+
+            'observations': traj_xy,
+            'min_spec': min_spec_val,      # 存安全评分
+            'inference_time': avg_inf_time # 存推理时间
         }
         all_raw_results.append(run_data)
 
